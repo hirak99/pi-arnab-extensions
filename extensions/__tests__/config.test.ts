@@ -306,3 +306,57 @@ describe("loadEffectiveConfig", () => {
     }
   });
 });
+
+// ─── channel bindings (static channels) ──────────────────────────────────────
+
+describe("loadChannelBindings + saveChannelBinding", () => {
+  it("returns an empty object when no bindings file exists", async () => {
+    const { loadChannelBindings, CHANNELS_FILE } = await import("../config.js");
+    const { rm } = await import("node:fs/promises");
+    await rm(CHANNELS_FILE, { force: true });
+
+    const bindings = await loadChannelBindings();
+    expect(bindings).toEqual({});
+  });
+
+  it("round-trips a binding for a project directory", async () => {
+    const { loadChannelBindings, saveChannelBinding } = await import("../config.js");
+
+    await saveChannelBinding("/proj/a", { channelId: "ch-1", channelName: "proj-a" });
+
+    const bindings = await loadChannelBindings();
+    expect(bindings["/proj/a"]).toEqual({ channelId: "ch-1", channelName: "proj-a" });
+  });
+
+  it("keeps bindings for other projects when adding a new one", async () => {
+    const { loadChannelBindings, saveChannelBinding } = await import("../config.js");
+
+    await saveChannelBinding("/proj/b", { channelId: "ch-2", channelName: "proj-b" });
+    await saveChannelBinding("/proj/c", { channelId: "ch-3", channelName: "proj-c" });
+
+    const bindings = await loadChannelBindings();
+    expect(bindings["/proj/b"]).toEqual({ channelId: "ch-2", channelName: "proj-b" });
+    expect(bindings["/proj/c"]).toEqual({ channelId: "ch-3", channelName: "proj-c" });
+  });
+
+  it("replaces the binding for the same project directory", async () => {
+    const { loadChannelBindings, saveChannelBinding } = await import("../config.js");
+
+    await saveChannelBinding("/proj/d", { channelId: "ch-old", channelName: "proj-d" });
+    await saveChannelBinding("/proj/d", { channelId: "ch-new", channelName: "proj-d" });
+
+    const bindings = await loadChannelBindings();
+    expect(bindings["/proj/d"]).toEqual({ channelId: "ch-new", channelName: "proj-d" });
+  });
+
+  it("loadChannelBindings returns fresh data after each save", async () => {
+    const { loadChannelBindings, saveChannelBinding } = await import("../config.js");
+
+    const before = await loadChannelBindings();
+    await saveChannelBinding("/proj/e", { channelId: "ch-e", channelName: "proj-e" });
+    const after = await loadChannelBindings();
+
+    expect(after["/proj/e"]).toEqual({ channelId: "ch-e", channelName: "proj-e" });
+    expect(Object.keys(after).length).toBeGreaterThanOrEqual(Object.keys(before).length);
+  });
+});

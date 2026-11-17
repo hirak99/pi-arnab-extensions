@@ -35,6 +35,8 @@ import { basename } from "node:path";
 import {
   loadConfig,
   loadEffectiveConfig,
+  loadChannelBindings,
+  saveChannelBinding,
   saveConfig,
   CONFIG_FILE,
   defaultConfigTemplate,
@@ -42,6 +44,7 @@ import {
 import type { Config } from "./config.js";
 import {
   makeChannelName,
+  makeStaticChannelName,
   splitMessage,
   toolLabel,
   isAbortLikeError,
@@ -697,6 +700,33 @@ export default function (pi: ExtensionAPI) {
     setStatusFn: (key: string, val: string | undefined) => void,
   ): Promise<void> {
     if (!client || !runtime.activeChannelId) return;
+
+    if (activeConfig?.staticChannel) {
+      // Static channel: preserve history. Post a closing notice, then deny
+      // SendMessages to @everyone (the everyone-role id equals the guild id),
+      // making the channel read-only until a new session adopts it.
+      // The project→channel binding is kept, so the next session in this
+      // project reuses this exact channel.
+      try {
+        const channel = (await client.channels.fetch(runtime.activeChannelId)) as TextChannel | null;
+        if (channel?.isTextBased()) {
+          await (channel as TextChannel).send(
+            "🔒 _Session ended — this channel is now read-only. History is preserved; " +
+              "starting a session in this project again will reopen it._",
+          );
+          await (channel as TextChannel).permissionOverwrites
+            .edit((channel as TextChannel).guildId, { SendMessages: false })
+            .catch(() => {});
+        }
+      } catch (err) {
+        console.error("[pi-discord-remote] Failed to lock static channel:", err);
+      }
+      runtime.activeChannelId = null;
+      runtime.sessionChannelName = null;
+      setStatusFn("pi-discord-remote", undefined);
+      return;
+    }
+
     try {
       const channel = (await client.channels.fetch(runtime.activeChannelId)) as TextChannel | null;
       if (channel) await channel.delete("Pi session ended");
@@ -973,21 +1003,86 @@ export default function (pi: ExtensionAPI) {
       const timeout = setTimeout(() => reject(new Error("ready timeout (30s)")), 30_000);
       client!.once("ready", async (c) => {
         clearTimeout(timeout);
-        // Channel creation happens inside this single ready handler
-        const channelName = makeChannelName(cwd);
+        // Channel creation/adoption happens inside this single ready handler
+        const staticName = cfg.staticChannel ? makeStaticChannelName(cwd, cfg.channelName) : null;
+        const channelName = staticName ?? makeChannelName(cwd);
         try {
           const guild = await c.guilds.fetch(cfg.guildId);
-          const newChannel = await guild.channels.create({
-            name: channelName,
-            type: ChannelType.GuildText,
-            ...(cfg.categoryId ? { parent: cfg.categoryId } : {}),
-            topic: `Pi session — ${cwd}`,
-          });
-          runtime.activeChannelId = newChannel.id;
-          runtime.sessionChannelName = channelName;
+          let channel: TextChannel | null = null;
+          let resumed = false;
 
-          const label = `🔌 Discord: #${channelName}`;
-          notifyFn(`Connected as ${c.user.tag} → #${channelName}`, "success");
+          if (cfg.staticChannel) {
+            // Reuse an existing channel when possible: first the persisted
+            // binding for this project, then a name search in the guild.
+            // (The everyone-role id equals the guild id, so a send-deny
+            // overwrite set at lock time is what makes a found channel
+            // read-only; it is cleared below on adoption.)
+            const bound = (await loadChannelBindings())[cwd];
+            if (bound) {
+              try {
+                const fetched = (await c.channels.fetch(bound.channelId)) as TextChannel | null;
+                if (
+                  fetched?.isTextBased() &&
+                  "guildId" in fetched &&
+                  fetched.guildId === cfg.guildId
+                ) {
+                  channel = fetched as TextChannel;
+                }
+                // Stale binding (channel deleted or moved) — fall through to
+                // the name search, which rebinds on adoption/create.
+              } catch {
+                // Fetch failed — fall through to the name search.
+              }
+            }
+            if (!channel) {
+              const all = await guild.channels.fetch();
+              const match = all.find(
+                (ch): ch is TextChannel =>
+                  !!ch &&
+                  ch.type === ChannelType.GuildText &&
+                  ch.name.toLowerCase() === channelName,
+              );
+              channel = match ?? null;
+            }
+          }
+
+          if (channel) {
+            // Adopt a static channel: reopen it and say so.
+            resumed = true;
+            try {
+              await channel.permissionOverwrites.edit(channel.guildId, { SendMessages: null });
+            } catch (err) {
+              console.error("[pi-discord-remote] Failed to unlock static channel:", err);
+            }
+            runtime.activeChannelId = channel.id;
+            runtime.sessionChannelName = channel.name;
+            await saveChannelBinding(cwd, { channelId: channel.id, channelName });
+            try {
+              await channel.send("🔓 _Session started — this channel is live again._");
+            } catch {
+              // Non-fatal — the channel works even if the notice fails.
+            }
+          } else {
+            const newChannel = await guild.channels.create({
+              name: channelName,
+              type: ChannelType.GuildText,
+              ...(cfg.categoryId ? { parent: cfg.categoryId } : {}),
+              topic: `Pi session — ${cwd}`,
+            });
+            runtime.activeChannelId = newChannel.id;
+            runtime.sessionChannelName = channelName;
+            if (cfg.staticChannel) {
+              await saveChannelBinding(cwd, { channelId: newChannel.id, channelName });
+            }
+          }
+
+          const label = `🔌 Discord: #${runtime.sessionChannelName ?? channelName}`;
+          notifyFn(
+            resumed
+              ? `Reusing #${runtime.sessionChannelName} (static channel)`
+              : `Connected as ${c.user.tag} → #${channelName}`,
+            "success",
+          );
           setStatusFn("pi-discord-remote", label);
         } catch (err) {
           // Channel creation failed — fall back to configured channelId

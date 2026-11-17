@@ -56,6 +56,39 @@ export interface Config {
    * global config too. Reloads are never auto-connected: the existing
    * connection survives a reload. */
   autoStart?: boolean;
+  /** Keep the session's Discord channel across sessions instead of deleting
+   * it on session end: the channel is locked read-only with a closing
+   * message, and reused (unlocked) when the next session in the same project
+   * starts (default: false). */
+  staticChannel?: boolean;
+  /** Explicit name for the static channel (defaults to the slugified project
+   * directory name). Only used when staticChannel is true. */
+  channelName?: string;
+}
+
+/** Persisted binding between a project directory and its static channel. */
+export interface ChannelBinding {
+  channelId: string;
+  channelName: string;
+}
+
+export const CHANNELS_FILE = join(CONFIG_DIR, "channels.json");
+
+/** All known project→channel bindings (empty object when none / unreadable). */
+export async function loadChannelBindings(): Promise<Record<string, ChannelBinding>> {
+  try {
+    return JSON.parse(await readFile(CHANNELS_FILE, "utf-8")) as Record<string, ChannelBinding>;
+  } catch {
+    return {};
+  }
+}
+
+/** Record (or replace) the binding for a project directory. */
+export async function saveChannelBinding(cwd: string, binding: ChannelBinding): Promise<void> {
+  const bindings = await loadChannelBindings();
+  bindings[cwd] = binding;
+  await mkdir(CONFIG_DIR, { recursive: true });
+  await writeFile(CHANNELS_FILE, JSON.stringify(bindings, null, 2) + "\n");
 }
 
 /** Name of the optional per-project override file inside <project>/.pi/. */

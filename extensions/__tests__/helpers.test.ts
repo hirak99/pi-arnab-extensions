@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   makeChannelName,
+  makeStaticChannelName,
   splitMessage,
   toolLabel,
   isAbortLikeError,
@@ -53,6 +54,40 @@ describe("makeChannelName", () => {
     const name = makeChannelName("/my-project");
     // Should match pattern like "my-project-may18-1430"
     expect(name).toMatch(/^my-project-[a-z]{3}\d{2}-\d{4}$/);
+  });
+});
+
+// ─── makeStaticChannelName ────────────────────────────────────────────────────
+
+describe("makeStaticChannelName", () => {
+  it("uses the slugified basename of cwd with no date suffix", () => {
+    expect(makeStaticChannelName("/home/user/My Project")).toBe("my-project");
+  });
+
+  it("prefers an explicit channelName over the directory name", () => {
+    expect(makeStaticChannelName("/home/user/whatever", "Hermes Agents")).toBe("hermes-agents");
+  });
+
+  it("falls back to 'pi' for an empty basename", () => {
+    expect(makeStaticChannelName("/")).toBe("pi");
+  });
+
+  it("falls back to 'pi' when the explicit name slugs to nothing", () => {
+    expect(makeStaticChannelName("/x", "!!!")).toBe("pi");
+  });
+
+  it("treats a whitespace-only explicit name as unset", () => {
+    expect(makeStaticChannelName("/home/user/proj", "   ")).toBe("proj");
+  });
+
+  it("truncates to 100 chars max", () => {
+    expect(makeStaticChannelName("/a/" + "x".repeat(200)).length).toBeLessThanOrEqual(100);
+  });
+
+  it("is stable across calls (no time component)", () => {
+    const a = makeStaticChannelName("/home/user/proj");
+    const b = makeStaticChannelName("/home/user/proj");
+    expect(a).toBe(b);
   });
 });
 

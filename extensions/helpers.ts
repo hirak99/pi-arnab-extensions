@@ -21,6 +21,23 @@ export function makeChannelName(cwd: string): string {
     .slice(0, 100);
 }
 
+/**
+ * Static channel name — stable across sessions, no date suffix. Defaults to
+ * the slugified project directory name (same base as makeChannelName's
+ * prefix); an explicit channelName overrides it.
+ */
+export function makeStaticChannelName(cwd: string, channelName?: string): string {
+  const explicit = channelName?.trim();
+  const raw = (explicit || basename(cwd) || "pi").toLowerCase();
+  return (
+    raw
+      .replace(/[^a-z0-9\-_]/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 100) || "pi"
+  );
+}
+
 /** Count how many unmatched ``` fences precede a position in the text. */
 function countOpenFences(text: string): number {
   let count = 0;

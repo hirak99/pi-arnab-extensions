@@ -36,7 +36,7 @@ Note: pi's `/reload` does **not** pick up rebuilt extension code (module
 caching). After `npm run build`, restart pi, then `/pi-discord-remote start`.
 
 Fork-only config keys used below: `displayNames`, `echo`, `steer`, `stream`,
-`autoStart`. For day-to-day operations — reconnecting after a reboot,
+`autoStart`, `staticChannel`, `channelName`. For day-to-day operations — reconnecting after a reboot,
 diagnosing failures, the fork dev loop — see [docs/notes.md](docs/notes.md).
 
 ### Message attribution
@@ -134,6 +134,41 @@ to live in the global config. Details:
 |------------|------|---------|-------------|
 | `autoStart` | boolean | `false` | Connect to Discord automatically when a new or resumed session starts (intended as a per-project opt-in via `.pi/discord-remote.json`) |
 
+### Static channels
+
+By default each session creates a fresh, date-suffixed channel and deletes it
+on session end. With `"staticChannel": true` the channel becomes a permanent,
+per-project archive:
+
+- **Stable name** — `<project-dir>` (or `channelName`), no date suffix
+- **Preserved** — the channel and its history are kept when the session ends;
+  a 🔒 closing message is posted and `SendMessages` is denied to `@everyone`,
+  making the channel read-only
+- **Reused** — the next session in the same project adopts the channel: the
+  read-only lock is lifted and a 🔓 "live again" message is posted. The
+  project→channel binding is persisted in `~/.pi/agent/pi-discord-remote/channels.json`
+  (with a name-based search as fallback for channels created before the
+  binding existed)
+
+Typical per-project opt-in (`.pi/discord-remote.json`):
+
+```json
+{ "autoStart": true, "staticChannel": true, "channelName": "process-graph" }
+```
+
+`channelName` is optional — omit it to use the slugified project directory
+name. Set it when two different projects share a directory basename (a new
+session would otherwise adopt the other's channel).
+
+Caveat: two *live* sessions in the same project share one channel — their
+messages interleave and unlock/lock can race. Static channels assume one
+session per project.
+
+| Config key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `staticChannel` | boolean | `false` | Keep the channel across sessions: lock read-only on session end, reuse (unlock) on the next session in the same project |
+| `channelName` | string | — | Explicit name for the static channel (default: slugified project directory name) |
+
 ### Connection diagnostic
 
 `test-connect.mjs` (repo root) attempts the same gateway login the extension
@@ -159,6 +194,8 @@ pi install npm:pi-discord-remote
    - Send Messages
    - Add Reactions
    - **Manage Channels** ← required for auto-create/delete
+   - **Manage Roles** ← required for static-channel lock/unlock (editing
+     channel permission overwrites is gated on this, not Manage Channels)
 
 ## Usage
 
@@ -203,6 +240,8 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `reactions` | boolean | `true` | React with ⏳ while processing |
 | `toolResponses` | boolean | `false` | Also post tool outputs/results alongside tool-call labels (truncated to ≤400 chars) |
 | `autoStart` | boolean | `false` | Connect automatically on new/resumed session start — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
+| `staticChannel` | boolean | `false` | Keep the channel across sessions (lock read-only on end, reuse on next session) — see above |
+| `channelName` | string | — | Explicit static channel name (default: slugified project directory name) |
 
 Edit config with `/pi-discord-remote open-config`.
 

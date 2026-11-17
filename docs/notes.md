@@ -45,8 +45,18 @@ a turn in this session. `/pi-discord-remote stop` tears the channel down.
      **Save Changes** (saving is the step everyone misses).
    - `Could not create channel` / permission errors → re-invite the bot:
      OAuth2 → URL Generator → scope `bot` + permissions **View Channels**,
-     **Send Messages**, **Add Reactions**, **Manage Channels** → open URL →
-     authorize. Re-inviting just updates permissions.
+     **Send Messages**, **Add Reactions**, **Manage Channels**, **Manage
+     Roles** → open URL → authorize. Re-inviting just updates permissions.
+     (Manage Roles is required for static-channel lock/unlock — editing
+     channel permission overwrites is gated on it, not on Manage Channels.)
+   - `DiscordAPIError[50013]: Missing Permissions` on `…/channels/<id>/
+     permissions/<id>` when a static channel is adopted/ended → same fix:
+     the bot role needs **Manage Roles** (see above). The lock/unlock
+     failure is non-fatal — everything else keeps working.
+   - Static channel "not read-only" when tested by the server owner/admin →
+     expected: Administrator bypasses every channel overwrite. Verify the
+     lock with a non-privileged account, or check Edit Channel →
+     Permissions → `@everyone` Send Messages = ❌.
    - `Your user ID is not on the allow-list` → a username was pasted, not an
      ID. Right-click your own name in the member list → **Copy User ID**
      (needs Developer Mode on). Must be a 17–20 digit number. Then
@@ -80,6 +90,12 @@ ever moves. Commit early; push when you want the work backed up remotely.
 - `stream: true` — assistant text streams into a buffer message edited in
   place (throttled 1/s, tail preview); at turn end the full reply posts and
   the buffer is deleted.
+- `autoStart: true` (per-project `.pi/discord-remote.json`) — connect
+  automatically when a new/resumed session starts in that project.
+- `staticChannel: true` (same file) — keep the project's channel across
+  sessions: 🔒 read-only (`@everyone` Send Messages deny) at session end,
+  🔓 reused/unlocked by the next session. Needs **Manage Roles** on the bot.
+  Optional `channelName` overrides the default `<project-dir>` name.
 
 See the README's "Fork additions" section for full descriptions.
 
