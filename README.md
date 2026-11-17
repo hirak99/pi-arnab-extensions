@@ -158,7 +158,16 @@ Typical per-project opt-in (`.pi/discord-remote.json`):
 
 `channelName` is optional — omit it to use the slugified project directory
 name. Set it when two different projects share a directory basename (a new
-session would otherwise adopt the other's channel).
+session would otherwise adopt the other's channel). It is honored
+independently of `staticChannel`: without static mode there is no lock/reuse,
+and concurrent sessions in the same project produce same-named channels
+(Discord allows duplicates — each session only listens to its own).
+
+Changing `channelName` needs no manual Discord rename: the binding identifies
+a static channel by ID, and at adoption the bot renames the channel to the
+configured name — history moves with it, nothing is orphaned. (Discord-side
+renames without a config change are won back the same way, since an explicit
+`channelName` is declared intent.)
 
 Caveat: two *live* sessions in the same project share one channel — their
 messages interleave and unlock/lock can race. Static channels assume one
@@ -167,7 +176,7 @@ session per project.
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
 | `staticChannel` | boolean | `false` | Keep the channel across sessions: lock read-only on session end, reuse (unlock) on the next session in the same project |
-| `channelName` | string | — | Explicit name for the static channel (default: slugified project directory name) |
+| `channelName` | string | — | Explicit channel name — no date suffix, honored with or without `staticChannel` (default: slugified project dir for static, date-suffixed per-session name otherwise) |
 
 ### Connection diagnostic
 
@@ -241,7 +250,7 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `toolResponses` | boolean | `false` | Also post tool outputs/results alongside tool-call labels (truncated to ≤400 chars) |
 | `autoStart` | boolean | `false` | Connect automatically on new/resumed session start — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
 | `staticChannel` | boolean | `false` | Keep the channel across sessions (lock read-only on end, reuse on next session) — see above |
-| `channelName` | string | — | Explicit static channel name (default: slugified project directory name) |
+| `channelName` | string | — | Explicit channel name, no date suffix, honored with or without `staticChannel` — see above |
 
 Edit config with `/pi-discord-remote open-config`.
 

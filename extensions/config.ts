@@ -61,8 +61,10 @@ export interface Config {
    * message, and reused (unlocked) when the next session in the same project
    * starts (default: false). */
   staticChannel?: boolean;
-  /** Explicit name for the static channel (defaults to the slugified project
-   * directory name). Only used when staticChannel is true. */
+  /** Explicit channel name — no date suffix, honored whether or not
+   * staticChannel is set. Without it, the name is the slugified project
+   * directory name for static channels, or a date-suffixed per-session
+   * name otherwise. */
   channelName?: string;
 }
 

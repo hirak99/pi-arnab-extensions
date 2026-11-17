@@ -1004,8 +1004,13 @@ export default function (pi: ExtensionAPI) {
       client!.once("ready", async (c) => {
         clearTimeout(timeout);
         // Channel creation/adoption happens inside this single ready handler
-        const staticName = cfg.staticChannel ? makeStaticChannelName(cwd, cfg.channelName) : null;
-        const channelName = staticName ?? makeChannelName(cwd);
+        // An explicit channelName is honored on its own — no date suffix,
+        // whether or not staticChannel is set. Without it, static channels
+        // use the project slug and per-session channels get the date suffix.
+        const channelName =
+          (cfg.channelName?.trim() || cfg.staticChannel)
+            ? makeStaticChannelName(cwd, cfg.channelName)
+            : makeChannelName(cwd);
         try {
           const guild = await c.guilds.fetch(cfg.guildId);
           let channel: TextChannel | null = null;
@@ -1047,15 +1052,29 @@ export default function (pi: ExtensionAPI) {
           }
 
           if (channel) {
-            // Adopt a static channel: reopen it and say so.
+            // Adopt a static channel: reopen it and say so. The binding
+            // identifies the channel (ID — unique, rename-proof); the config
+            // names it. If the current name drifted — channelName changed,
+            // or someone renamed the channel in Discord — rename it back so
+            // the declared name wins and history stays in one place.
             resumed = true;
+            if (channel.name.toLowerCase() !== channelName.toLowerCase()) {
+              try {
+                await channel.edit({ name: channelName });
+                console.log(
+                  `[pi-discord-remote] Renamed static channel #${channel.name} → #${channelName}`,
+                );
+              } catch (err) {
+                console.error("[pi-discord-remote] Failed to rename static channel:", err);
+              }
+            }
             try {
               await channel.permissionOverwrites.edit(channel.guildId, { SendMessages: null });
             } catch (err) {
               console.error("[pi-discord-remote] Failed to unlock static channel:", err);
             }
             runtime.activeChannelId = channel.id;
-            runtime.sessionChannelName = channel.name;
+            runtime.sessionChannelName = channelName;
             await saveChannelBinding(cwd, { channelId: channel.id, channelName });
             try {
               await channel.send("🔓 _Session started — this channel is live again._");

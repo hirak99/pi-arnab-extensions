@@ -95,7 +95,9 @@ ever moves. Commit early; push when you want the work backed up remotely.
 - `staticChannel: true` (same file) — keep the project's channel across
   sessions: 🔒 read-only (`@everyone` Send Messages deny) at session end,
   🔓 reused/unlocked by the next session. Needs **Manage Roles** on the bot.
-  Optional `channelName` overrides the default `<project-dir>` name.
+  Optional `channelName` sets an explicit channel name (no date suffix),
+  with or without static mode. Changing it renames the bound channel on the
+  next session (binding is by ID — history moves with the rename).
 
 See the README's "Fork additions" section for full descriptions.
 
