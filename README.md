@@ -42,11 +42,13 @@ Fork-only config keys used below: `displayNames`, `echo`, `steer`, `stream`.
 Prompts received from Discord are attributed to their author, so the agent
 knows who is driving: messages arrive in Pi as `[Name]: <text>`. The name is
 resolved from the `displayNames` config map (keyed by user ID) first, then the
-server nickname, then the global display name, then the `@username`.
+server nickname, then the global display name, then the `@username`. A
+`displayNames` value of `null` marks the **default user** — their messages
+are injected with no prefix at all.
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `displayNames` | object | `{}` | Display-name overrides keyed by Discord user ID, e.g. `{ "123…": "Arnab" }`. Wins over nickname / global name / username |
+| `displayNames` | object | `{}` | Display-name overrides keyed by Discord user ID. String wins over nickname / global name / username; `null` = default user, no prefix |
 
 ### Echo (two-way mirror)
 

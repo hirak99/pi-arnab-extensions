@@ -25,8 +25,10 @@ export interface Config {
   /** Also send tool responses (output/results) after each tool call (default: false) */
   toolResponses?: boolean;
   /** Optional display-name overrides keyed by Discord user ID, e.g. { "123…": "Arnab" }.
-   * Matched first, before nickname / global name / username fallbacks. */
-  displayNames?: Record<string, string>;
+   * Matched first, before nickname / global name / username fallbacks.
+   * A null value marks the default user: their messages are injected with no
+   * [Name]: prefix at all. */
+  displayNames?: Record<string, string | null>;
   /** Mirror session activity that did NOT originate from Discord into the
    * channel: prompts typed in the pi terminal, their tool-call labels, and
    * the assistant's replies (default: false — only Discord-originated turns

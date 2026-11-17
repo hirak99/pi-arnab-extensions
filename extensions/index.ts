@@ -735,14 +735,18 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Attribute the prompt to its Discord author so the agent knows who is driving.
-      // Explicit config overrides (displayNames) win; then server nickname, global
-      // display name, and finally the @username handle.
+      // displayNames wins: a string overrides the name, null marks the default
+      // user whose messages get no [Name]: prefix. Otherwise fall back to
+      // server nickname, global display name, and finally the @username handle.
+      const displayName = activeConfig?.displayNames?.[message.author.id];
       const authorName =
-        activeConfig?.displayNames?.[message.author.id] ??
-        message.member?.displayName ??
-        message.author.displayName ??
-        message.author.username;
-      const injected = `[${authorName}]: ${message.content}`;
+        displayName === null
+          ? null
+          : displayName ??
+            message.member?.displayName ??
+            message.author.displayName ??
+            message.author.username;
+      const injected = authorName === null ? message.content : `[${authorName}]: ${message.content}`;
 
       if (agentBusy) {
         if (activeConfig.steer) {
