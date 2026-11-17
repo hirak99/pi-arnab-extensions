@@ -116,9 +116,21 @@ export default function (pi: ExtensionAPI) {
   // silently stays inert. Lifecycle events cover top-level agents only;
   // nested/workflow-owned children report through their parent.
   let subagentsAvailable = false;
-  const runningSubagents = new Set<string>();
+  interface RunningSubagent {
+    type?: string;
+    description?: string;
+  }
+  const runningSubagents = new Map<string, RunningSubagent>();
   /** True once the "N subagents working" notice has been posted for the current streak. */
   let subagentNoticePosted = false;
+
+  // Display name for a subagent: its short task description wins, falling
+  // back to the agent type, then to a generic label.
+  function subagentLabel(meta: RunningSubagent | undefined): string {
+    const desc = meta?.description?.trim();
+    if (desc) return desc.length > 80 ? desc.slice(0, 80) + "…" : desc;
+    return meta?.type?.trim() || "subagent";
+  }
   const subagentUnsubs: Array<() => void> = [];
 
   subagentUnsubs.push(
@@ -126,7 +138,9 @@ export default function (pi: ExtensionAPI) {
       subagentsAvailable = true;
     }),
     pi.events.on("subagents:started", (event: any) => {
-      if (event?.id) runningSubagents.add(event.id);
+      if (event?.id) {
+        runningSubagents.set(event.id, { type: event?.type, description: event?.description });
+      }
     }),
     pi.events.on("subagents:completed", (event: any) => {
       void onSubagentSettled(event);
@@ -145,10 +159,20 @@ export default function (pi: ExtensionAPI) {
 
   async function onSubagentSettled(event: any): Promise<void> {
     if (!event?.id) return;
-    const wasRunning = runningSubagents.delete(event.id);
-    // Only announce when the user was previously told subagents were working
-    // and this settle event emptied the set.
-    if (!wasRunning || runningSubagents.size > 0 || !subagentNoticePosted) return;
+    const meta = runningSubagents.get(event.id);
+    // Unknown id — either never tracked or already settled. Ignore.
+    if (!meta) return;
+    runningSubagents.delete(event.id);
+    // Only announce completions the user was set up to expect: if no
+    // "working" notice went out, the agent finished before the turn ended
+    // and its result is already in the reply.
+    if (!subagentNoticePosted) return;
+    if (runningSubagents.size > 0) {
+      await sendToActiveChannel(
+        `✅ Subagent finished: ${subagentLabel(meta)} (${runningSubagents.size} still working…)`,
+      );
+      return;
+    }
     subagentNoticePosted = false;
     await sendToActiveChannel("✅ All subagents finished working.");
   }
@@ -277,7 +301,14 @@ export default function (pi: ExtensionAPI) {
     if (!subagentsAvailable || subagentNoticePosted || runningSubagents.size === 0) return;
     subagentNoticePosted = true;
     const n = runningSubagents.size;
-    await sendToActiveChannel(`🤖 ${n} subagent${n === 1 ? "" : "s"} working…`);
+    const MAX_LISTED = 10;
+    const lines = [...runningSubagents.values()]
+      .slice(0, MAX_LISTED)
+      .map((meta) => `• ${subagentLabel(meta)}`);
+    if (n > MAX_LISTED) lines.push(`• …and ${n - MAX_LISTED} more`);
+    await sendToActiveChannel(
+      `🤖 ${n} subagent${n === 1 ? "" : "s"} working…\n${lines.join("\n")}`,
+    );
   }
 
   function getTargetChannelId(overrideChannelId?: string): string | null {
