@@ -109,6 +109,50 @@ export default function (pi: ExtensionAPI) {
   let questionAbortListener: (() => void) | null = null;
   let questionAbortSignal: AbortSignal | null = null;
 
+  // ── Subagent activity tracking (pi-subagents, optional) ──────────────
+  // Discovered over the shared pi.events bus: pi-subagents broadcasts
+  // `subagents:ready` on session start. If the plugin is not installed — or
+  // excluded from this session — no events ever arrive and this feature
+  // silently stays inert. Lifecycle events cover top-level agents only;
+  // nested/workflow-owned children report through their parent.
+  let subagentsAvailable = false;
+  const runningSubagents = new Set<string>();
+  /** True once the "N subagents working" notice has been posted for the current streak. */
+  let subagentNoticePosted = false;
+  const subagentUnsubs: Array<() => void> = [];
+
+  subagentUnsubs.push(
+    pi.events.on("subagents:ready", () => {
+      subagentsAvailable = true;
+    }),
+    pi.events.on("subagents:started", (event: any) => {
+      if (event?.id) runningSubagents.add(event.id);
+    }),
+    pi.events.on("subagents:completed", (event: any) => {
+      void onSubagentSettled(event);
+    }),
+    pi.events.on("subagents:failed", (event: any) => {
+      void onSubagentSettled(event);
+    }),
+    // Terminal event of a session: every agent has been stopped. Reset all
+    // state so a later session_start in the same process starts clean.
+    pi.events.on("subagents:disposed", () => {
+      subagentsAvailable = false;
+      runningSubagents.clear();
+      subagentNoticePosted = false;
+    }),
+  );
+
+  async function onSubagentSettled(event: any): Promise<void> {
+    if (!event?.id) return;
+    const wasRunning = runningSubagents.delete(event.id);
+    // Only announce when the user was previously told subagents were working
+    // and this settle event emptied the set.
+    if (!wasRunning || runningSubagents.size > 0 || !subagentNoticePosted) return;
+    subagentNoticePosted = false;
+    await sendToActiveChannel("✅ All subagents finished working.");
+  }
+
   function clearQuestionState(): void {
     if (questionTimeout) {
       clearTimeout(questionTimeout);
@@ -224,6 +268,16 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       console.error("[pi-discord-remote] Failed to send message:", err);
     }
+  }
+
+  // Called at the end of each turn. Announces subagents still running in the
+  // background (once per streak) so Discord users know the session isn't idle;
+  // the matching "all finished" line is sent from onSubagentSettled.
+  async function maybePostSubagentNotice(): Promise<void> {
+    if (!subagentsAvailable || subagentNoticePosted || runningSubagents.size === 0) return;
+    subagentNoticePosted = true;
+    const n = runningSubagents.size;
+    await sendToActiveChannel(`🤖 ${n} subagent${n === 1 ? "" : "s"} working…`);
   }
 
   function getTargetChannelId(overrideChannelId?: string): string | null {
@@ -550,6 +604,7 @@ export default function (pi: ExtensionAPI) {
     // pendingReplyChannelId cleared after send below
 
     if (!text) {
+      await maybePostSubagentNotice();
       pendingReplyChannelId = null;
       pendingReplyUserId = null;
       return;
@@ -568,6 +623,7 @@ export default function (pi: ExtensionAPI) {
     if (streamBufferToDelete) {
       await deleteStreamBuffer(streamBufferToDelete);
     }
+    await maybePostSubagentNotice();
     pendingReplyChannelId = null;
     pendingReplyUserId = null;
   });
@@ -784,6 +840,9 @@ export default function (pi: ExtensionAPI) {
       questionRejecter(new Error("Session shut down"));
     }
     clearQuestionState();
+    // Drop pi.events bus subscriptions so a reloaded copy of this extension
+    // doesn't accumulate stale handlers on the shared bus.
+    for (const unsub of subagentUnsubs.splice(0)) unsub();
     clearReconnectTimer();
     isShuttingDown = true;
     // Don't destroy Discord client on reload — just re-register handlers
