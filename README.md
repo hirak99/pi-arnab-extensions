@@ -10,6 +10,33 @@ Each time you run `/pi-discord-remote start`, the extension automatically create
 
 Everything in this section is **not in upstream** — it exists only in this fork.
 
+### Installing this fork
+
+The upstream `pi install npm:pi-discord-remote` command installs the *npm*
+package, not this fork. To run this fork's code:
+
+```bash
+# 1. clone and build
+git clone https://github.com/hirak99/pi-discord-remote ~/git/pi-discord-remote
+cd ~/git/pi-discord-remote
+npm install && npm run build
+
+# 2. load it via pi's auto-discovered extensions dir (symlink keeps the
+#    clone as the single source of truth)
+mkdir -p ~/.pi/agent/extensions
+ln -sfn ~/git/pi-discord-remote ~/.pi/agent/extensions/pi-discord-remote
+
+# 3. configure and connect
+#    edit ~/.pi/agent/pi-discord-remote/config.json (token, guildId, allowedUserIds)
+#    in pi:
+/pi-discord-remote start
+```
+
+Note: pi's `/reload` does **not** pick up rebuilt extension code (module
+caching). After `npm run build`, restart pi, then `/pi-discord-remote start`.
+
+Fork-only config keys used below: `displayNames`, `echo`, `steer`, `stream`.
+
 ### Message attribution
 
 Prompts received from Discord are attributed to their author, so the agent
