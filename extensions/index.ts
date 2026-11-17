@@ -87,6 +87,11 @@ export default function (pi: ExtensionAPI) {
   const STREAM_EDIT_INTERVAL_MS = 1000;
   const STREAM_PREVIEW_MAX = 1900; // Discord message cap is 2000; leave headroom
 
+  // Visual turn boundary in the channel. Unicode box-drawing horizontal line —
+  // renders as a line unconditionally, unlike '---' which depends on Discord's
+  // markdown parsing.
+  const TURN_DIVIDER = "────────────────────";
+
   // ── Reconnection state ────────────────────────────────────────────────
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -502,9 +507,7 @@ export default function (pi: ExtensionAPI) {
           if (channel?.isTextBased()) {
             const prefix = "🖥️ **You** (terminal): ";
             const chunks = splitMessage(prefix + text);
-            // Discord renders '---' on its own line as a horizontal rule —
-            // marks the boundary before the agent's reply streams in.
-            chunks[chunks.length - 1] += "\n\n---";
+            chunks[chunks.length - 1] += "\n\n" + TURN_DIVIDER;
             for (const chunk of chunks) {
               await (channel as TextChannel).send(chunk);
             }
@@ -556,7 +559,7 @@ export default function (pi: ExtensionAPI) {
     // Prepend a mention to the last chunk so the sender is notified when work is done
     const mention = pendingReplyUserId ? `<@${pendingReplyUserId}> ` : "";
     const lastIdx = chunks.length - 1;
-    chunks[lastIdx] = mention + chunks[lastIdx];
+    chunks[lastIdx] = mention + chunks[lastIdx] + "\n\n" + TURN_DIVIDER;
 
     for (const chunk of chunks) {
       await sendToActiveChannel(chunk);
