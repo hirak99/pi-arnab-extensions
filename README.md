@@ -36,6 +36,8 @@ Note: pi's `/reload` does **not** pick up rebuilt extension code (module
 caching). After `npm run build`, restart pi, then `/pi-discord-remote start`.
 
 Fork-only config keys used below: `displayNames`, `echo`, `steer`, `stream`.
+For day-to-day operations — reconnecting after a reboot, diagnosing failures,
+the fork dev loop — see [docs/notes.md](docs/notes.md).
 
 ### Message attribution
 
