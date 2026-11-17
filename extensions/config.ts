@@ -1,13 +1,19 @@
 /**
  * Config management for pi-discord-remote.
  * Config is persisted to ~/.pi/agent/pi-discord-remote/config.json.
+ *
+ * The directory can be overridden with the PI_DISCORD_REMOTE_CONFIG_DIR
+ * env var — tests use this to point at an isolated temp dir so they never
+ * touch the real config.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-export const CONFIG_DIR = join(homedir(), ".pi", "agent", "pi-discord-remote");
+export const CONFIG_DIR =
+  process.env.PI_DISCORD_REMOTE_CONFIG_DIR ??
+  join(homedir(), ".pi", "agent", "pi-discord-remote");
 export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 export interface Config {
