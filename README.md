@@ -35,9 +35,9 @@ ln -sfn ~/git/pi-discord-remote ~/.pi/agent/extensions/pi-discord-remote
 Note: pi's `/reload` does **not** pick up rebuilt extension code (module
 caching). After `npm run build`, restart pi, then `/pi-discord-remote start`.
 
-Fork-only config keys used below: `displayNames`, `echo`, `steer`, `stream`.
-For day-to-day operations — reconnecting after a reboot, diagnosing failures,
-the fork dev loop — see [docs/notes.md](docs/notes.md).
+Fork-only config keys used below: `displayNames`, `echo`, `steer`, `stream`,
+`autoStart`. For day-to-day operations — reconnecting after a reboot,
+diagnosing failures, the fork dev loop — see [docs/notes.md](docs/notes.md).
 
 ### Message attribution
 
@@ -108,6 +108,32 @@ and echoed terminal turns.
 |------------|------|---------|-------------|
 | `stream` | boolean | `false` | Stream assistant text into a live-edited Discord message |
 
+### Auto-start (per-project opt-in)
+
+By default nothing connects until you run `/pi-discord-remote start`. A
+project can opt in to connecting automatically on **new and resumed**
+sessions by adding `.pi/discord-remote.json` to the project:
+
+```json
+{ "autoStart": true }
+```
+
+At session start the extension merges that file over the global config
+(`~/.pi/agent/pi-discord-remote/config.json`) — any key can be overridden
+per project (e.g. a different `categoryId`), but the bot `token` only needs
+to live in the global config. Details:
+
+- auto-connect fires only for `session_start` reasons `new` and `resume`;
+  reloads keep the existing connection, and sessions without the project
+  file stay manual
+- an unparseable project file logs a warning and falls back to the global
+  config — a broken opt-in never breaks the session
+- `/pi-discord-remote start` also honors the project overrides
+
+| Config key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `autoStart` | boolean | `false` | Connect to Discord automatically when a new or resumed session starts (intended as a per-project opt-in via `.pi/discord-remote.json`) |
+
 ### Connection diagnostic
 
 `test-connect.mjs` (repo root) attempts the same gateway login the extension
@@ -176,6 +202,7 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `allowedUserIds` | string[] | `[]` | Allow-list of Discord user IDs (empty = everyone) |
 | `reactions` | boolean | `true` | React with ⏳ while processing |
 | `toolResponses` | boolean | `false` | Also post tool outputs/results alongside tool-call labels (truncated to ≤400 chars) |
+| `autoStart` | boolean | `false` | Connect automatically on new/resumed session start — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
 
 Edit config with `/pi-discord-remote open-config`.
 

@@ -50,7 +50,16 @@ export interface Config {
    * the text tail, the full reply is still posted when the turn ends)
    * (default: false). */
   stream?: boolean;
+  /** Connect to Discord automatically when a new or resumed session starts
+   * (default: false — connect only via /pi-discord-remote start). Intended
+   * as a per-project opt-in in .pi/discord-remote.json, but honored in the
+   * global config too. Reloads are never auto-connected: the existing
+   * connection survives a reload. */
+  autoStart?: boolean;
 }
+
+/** Name of the optional per-project override file inside <project>/.pi/. */
+export const PROJECT_CONFIG_NAME = "discord-remote.json";
 
 export async function loadConfig(): Promise<Config | null> {
   try {
@@ -72,6 +81,29 @@ export async function loadConfig(): Promise<Config | null> {
       };
     }
     return null;
+  }
+}
+
+/**
+ * Global config merged with the optional per-project override file at
+ * `<cwd>/.pi/discord-remote.json`. Project values win. The file only needs
+ * the keys it overrides — typically `{ "autoStart": true }` or a
+ * project-specific categoryId; the bot token is always available from the
+ * global config. A missing file is not an error; an unparseable one logs a
+ * warning and falls back to the global config.
+ */
+export async function loadEffectiveConfig(cwd: string | undefined): Promise<Config | null> {
+  const global = await loadConfig();
+  if (!global || !cwd) return global;
+  const projectFile = join(cwd, ".pi", PROJECT_CONFIG_NAME);
+  try {
+    const overrides = JSON.parse(await readFile(projectFile, "utf-8")) as Partial<Config>;
+    return { ...global, ...overrides };
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") {
+      console.warn(`[pi-discord-remote] Ignoring unparseable ${projectFile}:`, err?.message);
+    }
+    return global;
   }
 }
 

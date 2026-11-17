@@ -32,7 +32,13 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 
-import { loadConfig, saveConfig, CONFIG_FILE, defaultConfigTemplate } from "./config.js";
+import {
+  loadConfig,
+  loadEffectiveConfig,
+  saveConfig,
+  CONFIG_FILE,
+  defaultConfigTemplate,
+} from "./config.js";
 import type { Config } from "./config.js";
 import {
   makeChannelName,
@@ -664,6 +670,25 @@ export default function (pi: ExtensionAPI) {
     // No remaining automatic work (runs, retries, steering, follow-ups) —
     // the session is truly idle and new Discord messages start fresh turns.
     agentBusy = false;
+  });
+
+  // ── Auto-connect on new/resumed sessions (per-project opt-in) ────────
+  // Fires when a session starts. Only "new" and "resume" are auto-connected
+  // (when the project opts in via .pi/discord-remote.json with
+  // { "autoStart": true }); "reload" keeps the existing client —
+  // session_shutdown deliberately preserves it across reloads.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pi.on("session_start", async (event: any, ctx: any) => {
+    if (event?.reason !== "new" && event?.reason !== "resume") return;
+    if (client) return;
+    const cfg = await loadEffectiveConfig(ctx?.cwd);
+    if (!cfg?.autoStart) return;
+    await startClient(
+      cfg,
+      ctx?.cwd ?? process.cwd(),
+      (msg, level) => ctx.ui.notify(msg, level),
+      (key, val) => ctx.ui.setStatus(key, val),
+    );
   });
 
   // ── Cleanup helper ───────────────────────────────────────────────────────
@@ -1393,7 +1418,10 @@ export default function (pi: ExtensionAPI) {
 
         // ── start ─────────────────────────────────────────────────────────
         case "start": {
-          const cfg = await loadConfig();
+          // Project overrides (.pi/discord-remote.json) win over the global
+          // config — autoStart is the usual per-project key, but a project
+          // can also pin its own categoryId/guildId here.
+          const cfg = await loadEffectiveConfig(ctx.cwd);
           if (!cfg) {
             ctx.ui.notify("No config found. Run /pi-discord-remote setup first.", "error");
             return;

@@ -180,3 +180,129 @@ describe("saveConfig + loadConfig", () => {
     }
   });
 });
+
+// ─── loadEffectiveConfig ─────────────────────────────────────────────────────
+
+describe("loadEffectiveConfig", () => {
+  async function makeProjectDir(): Promise<string> {
+    const dir = mkdtempSync(join(tmpdir(), "pi-discord-remote-project-"));
+    return dir;
+  }
+
+  async function writeProjectOverride(dir: string, contents: string): Promise<void> {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(dir, ".pi"), { recursive: true });
+    await writeFile(join(dir, ".pi", "discord-remote.json"), contents);
+  }
+
+  it("returns the global config unchanged when no project file exists", async () => {
+    const { loadEffectiveConfig, saveConfig } = await import("../config.js");
+
+    const origToken = process.env.DISCORD_TOKEN;
+    delete process.env.DISCORD_TOKEN;
+
+    try {
+      await saveConfig({ token: "global-token", guildId: "global-guild" });
+      const projectDir = await makeProjectDir();
+
+      const result = await loadEffectiveConfig(projectDir);
+      expect(result).not.toBeNull();
+      expect(result!.token).toBe("global-token");
+      expect(result!.guildId).toBe("global-guild");
+      expect(result!.autoStart).toBeUndefined();
+    } finally {
+      if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
+    }
+  });
+
+  it("merges project overrides over the global config", async () => {
+    const { loadEffectiveConfig, saveConfig } = await import("../config.js");
+
+    const origToken = process.env.DISCORD_TOKEN;
+    delete process.env.DISCORD_TOKEN;
+
+    try {
+      await saveConfig({
+        token: "global-token",
+        guildId: "global-guild",
+        categoryId: "global-category",
+        autoStart: false,
+      });
+      const projectDir = await makeProjectDir();
+      await writeProjectOverride(
+        projectDir,
+        JSON.stringify({ autoStart: true, categoryId: "project-category" }),
+      );
+
+      const result = await loadEffectiveConfig(projectDir);
+      expect(result).not.toBeNull();
+      // Overridden keys come from the project file…
+      expect(result!.autoStart).toBe(true);
+      expect(result!.categoryId).toBe("project-category");
+      // …everything else falls through to the global config.
+      expect(result!.token).toBe("global-token");
+      expect(result!.guildId).toBe("global-guild");
+    } finally {
+      if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
+    }
+  });
+
+  it("returns null when no global config exists, even with a project file", async () => {
+    const { loadEffectiveConfig, CONFIG_FILE } = await import("../config.js");
+    const { rm } = await import("node:fs/promises");
+
+    const origToken = process.env.DISCORD_TOKEN;
+    const origGuild = process.env.DISCORD_GUILD_ID;
+    delete process.env.DISCORD_TOKEN;
+    delete process.env.DISCORD_GUILD_ID;
+
+    try {
+      await rm(CONFIG_FILE, { force: true });
+      const projectDir = await makeProjectDir();
+      await writeProjectOverride(projectDir, JSON.stringify({ autoStart: true }));
+
+      const result = await loadEffectiveConfig(projectDir);
+      expect(result).toBeNull();
+    } finally {
+      if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
+      if (origGuild !== undefined) process.env.DISCORD_GUILD_ID = origGuild;
+    }
+  });
+
+  it("falls back to the global config when the project file is invalid JSON", async () => {
+    const { loadEffectiveConfig, saveConfig } = await import("../config.js");
+
+    const origToken = process.env.DISCORD_TOKEN;
+    delete process.env.DISCORD_TOKEN;
+
+    try {
+      await saveConfig({ token: "global-token", guildId: "global-guild" });
+      const projectDir = await makeProjectDir();
+      await writeProjectOverride(projectDir, "{ not json !");
+
+      const result = await loadEffectiveConfig(projectDir);
+      expect(result).not.toBeNull();
+      expect(result!.token).toBe("global-token");
+      expect(result!.guildId).toBe("global-guild");
+    } finally {
+      if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
+    }
+  });
+
+  it("returns the global config when cwd is undefined", async () => {
+    const { loadEffectiveConfig, saveConfig } = await import("../config.js");
+
+    const origToken = process.env.DISCORD_TOKEN;
+    delete process.env.DISCORD_TOKEN;
+
+    try {
+      await saveConfig({ token: "global-token", guildId: "global-guild" });
+
+      const result = await loadEffectiveConfig(undefined);
+      expect(result).not.toBeNull();
+      expect(result!.token).toBe("global-token");
+    } finally {
+      if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
+    }
+  });
+});
