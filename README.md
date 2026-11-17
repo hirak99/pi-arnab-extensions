@@ -37,6 +37,27 @@ them.
 |------------|------|---------|-------------|
 | `echo` | boolean | `false` | Mirror terminal-originated turns into the Discord channel |
 
+### Steering (mid-turn messages)
+
+By default, a message sent from Discord while a turn is running gets a
+"⏳ please wait" reply and is **dropped**. With `"steer": true`, the message
+is instead injected into the running turn with pi's `deliverAs: "steer"` —
+the agent receives it at its next step, before its next LLM call, as
+`[Name]: <text>` — and the message gets a ⏩ reaction. Delivery is attributed
+and deduped against echo exactly like idle-time messages.
+
+Steering takes effect between model calls, so a long-running tool call
+finishes before the agent reads your message. Aborting mid-tool (discord_agent's
+`!`-style interrupt) is not implemented — pi's extension API only exposes
+`ctx.abort()` inside event handlers.
+
+The busy flag is released on `agent_settled` (not `agent_end`), so messages
+arriving between sub-runs steer correctly instead of being rejected.
+
+| Config key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `steer` | boolean | `false` | Inject Discord messages received mid-turn into the running turn |
+
 ### Connection diagnostic
 
 `test-connect.mjs` (repo root) attempts the same gateway login the extension

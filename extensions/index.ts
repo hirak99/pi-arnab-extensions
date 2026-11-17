@@ -398,7 +398,8 @@ export default function (pi: ExtensionAPI) {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("agent_end", async (_event: any) => {
-    agentBusy = false;
+    // agentBusy stays true here — steering or follow-up work can start another
+    // run right after agent_end. It is released by agent_settled.
 
     const targetChannelId = mirrorTargetChannelId();
     if (!targetChannelId || !client) {
@@ -430,6 +431,13 @@ export default function (pi: ExtensionAPI) {
     }
     pendingReplyChannelId = null;
     pendingReplyUserId = null;
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pi.on("agent_settled", async (_event: any) => {
+    // No remaining automatic work (runs, retries, steering, follow-ups) —
+    // the session is truly idle and new Discord messages start fresh turns.
+    agentBusy = false;
   });
 
   // ── Cleanup helper ───────────────────────────────────────────────────────
@@ -587,8 +595,29 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      // Attribute the prompt to its Discord author so the agent knows who is driving.
+      // Explicit config overrides (displayNames) win; then server nickname, global
+      // display name, and finally the @username handle.
+      const authorName =
+        activeConfig?.displayNames?.[message.author.id] ??
+        message.member?.displayName ??
+        message.author.displayName ??
+        message.author.username;
+      const injected = `[${authorName}]: ${message.content}`;
+
       if (agentBusy) {
-        await message.reply("⏳ Still processing the previous message — please wait.").catch(() => {});
+        if (activeConfig.steer) {
+          // Steering: inject into the running turn. The message is delivered
+          // after the current assistant turn finishes its tool calls, before
+          // the next LLM call — the agent sees it immediately at its next step.
+          if (activeConfig.reactions !== false) {
+            await message.react("⏩").catch(() => {});
+          }
+          injectedQueue.push(injected);
+          pi.sendUserMessage(injected, { deliverAs: "steer" });
+        } else {
+          await message.reply("⏳ Still processing the previous message — please wait.").catch(() => {});
+        }
         return;
       }
 
@@ -599,15 +628,6 @@ export default function (pi: ExtensionAPI) {
       pendingReplyChannelId = message.channelId;
       pendingReplyUserId = message.author.id;
       collectedAssistantText = [];
-      // Attribute the prompt to its Discord author so the agent knows who is driving.
-      // Explicit config overrides (displayNames) win; then server nickname, global
-      // display name, and finally the @username handle.
-      const authorName =
-        activeConfig?.displayNames?.[message.author.id] ??
-        message.member?.displayName ??
-        message.author.displayName ??
-        message.author.username;
-      const injected = `[${authorName}]: ${message.content}`;
       injectedQueue.push(injected);
       pi.sendUserMessage(injected);
     };

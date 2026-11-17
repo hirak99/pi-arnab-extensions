@@ -32,6 +32,11 @@ export interface Config {
    * the assistant's replies (default: false — only Discord-originated turns
    * are mirrored). */
   echo?: boolean;
+  /** Inject messages received while a turn is running into that turn
+   * ("steering": the agent sees them at its next step, before its next LLM
+   * call) instead of replying "please wait" and dropping them
+   * (default: false). */
+  steer?: boolean;
 }
 
 export async function loadConfig(): Promise<Config | null> {
