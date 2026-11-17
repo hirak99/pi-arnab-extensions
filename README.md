@@ -58,6 +58,23 @@ arriving between sub-runs steer correctly instead of being rejected.
 |------------|------|---------|-------------|
 | `steer` | boolean | `false` | Inject Discord messages received mid-turn into the running turn |
 
+### Streaming replies
+
+By default the assistant's text is collected during a turn and only posted
+when the run ends. With `"stream": true`, the in-progress text is mirrored
+live: the extension posts one buffer message per run and edits it in place as
+text streams in (throttled to one edit per second for Discord's rate limits).
+The live view shows the text tail (last ~1900 chars, prefixed with "…"). When
+the run ends, the complete reply is posted as a normal message — with the
+usual @mention for Discord-originated turns — and the buffer is deleted, so
+the channel keeps a single clean copy. Tool-call labels keep posting as
+separate messages alongside the buffer. Applies to both Discord-originated
+and echoed terminal turns.
+
+| Config key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `stream` | boolean | `false` | Stream assistant text into a live-edited Discord message |
+
 ### Connection diagnostic
 
 `test-connect.mjs` (repo root) attempts the same gateway login the extension

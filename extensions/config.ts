@@ -37,6 +37,11 @@ export interface Config {
    * call) instead of replying "please wait" and dropping them
    * (default: false). */
   steer?: boolean;
+  /** Stream the assistant's in-progress text into a single Discord message
+   * edited in place (throttled to respect rate limits; the live view shows
+   * the text tail, the full reply is still posted when the turn ends)
+   * (default: false). */
+  stream?: boolean;
 }
 
 export async function loadConfig(): Promise<Config | null> {
