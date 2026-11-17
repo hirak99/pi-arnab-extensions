@@ -559,7 +559,15 @@ export default function (pi: ExtensionAPI) {
       pendingReplyChannelId = message.channelId;
       pendingReplyUserId = message.author.id;
       collectedAssistantText = [];
-      pi.sendUserMessage(message.content);
+      // Attribute the prompt to its Discord author so the agent knows who is driving.
+      // Explicit config overrides (displayNames) win; then server nickname, global
+      // display name, and finally the @username handle.
+      const authorName =
+        activeConfig?.displayNames?.[message.author.id] ??
+        message.member?.displayName ??
+        message.author.displayName ??
+        message.author.username;
+      pi.sendUserMessage(`[${authorName}]: ${message.content}`);
     };
   }
 

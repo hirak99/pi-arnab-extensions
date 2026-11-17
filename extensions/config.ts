@@ -24,6 +24,9 @@ export interface Config {
   reactions?: boolean;
   /** Also send tool responses (output/results) after each tool call (default: false) */
   toolResponses?: boolean;
+  /** Optional display-name overrides keyed by Discord user ID, e.g. { "123…": "Arnab" }.
+   * Matched first, before nickname / global name / username fallbacks. */
+  displayNames?: Record<string, string>;
 }
 
 export async function loadConfig(): Promise<Config | null> {
