@@ -26,7 +26,8 @@ server nickname, then the global display name, then the `@username`.
 By default the channel only shows turns that started in Discord. With
 `"echo": true` in the config, everything is mirrored both ways:
 
-- prompts typed in the Pi terminal appear in the channel as `🖥️ **You** (terminal): …`
+- prompts typed in the Pi terminal appear in the channel as `🖥️ **You** (terminal): …`,
+  with a `---` divider appended so the boundary before the agent's reply is clear
 - the agent's replies to those turns are posted when the turn ends
 - tool-call labels (and tool results, if `toolResponses` is on) stream in as usual
 

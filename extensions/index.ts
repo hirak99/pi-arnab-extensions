@@ -501,7 +501,11 @@ export default function (pi: ExtensionAPI) {
           const channel = (await client.channels.fetch(runtime.activeChannelId)) as TextChannel | null;
           if (channel?.isTextBased()) {
             const prefix = "🖥️ **You** (terminal): ";
-            for (const chunk of splitMessage(prefix + text)) {
+            const chunks = splitMessage(prefix + text);
+            // Discord renders '---' on its own line as a horizontal rule —
+            // marks the boundary before the agent's reply streams in.
+            chunks[chunks.length - 1] += "\n\n---";
+            for (const chunk of chunks) {
               await (channel as TextChannel).send(chunk);
             }
           }
