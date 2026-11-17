@@ -69,6 +69,9 @@ export default function (pi: ExtensionAPI) {
   let collectedAssistantText: string[] = [];
   let postedThinkingNotice = false;
   let lastImageArtifactPath: string | null = null;
+  // Raw texts of prompts we injected from Discord, awaiting their message_end.
+  // Used to keep echo from bouncing Discord-originated messages back to Discord.
+  const injectedQueue: string[] = [];
 
   // ── Reconnection state ────────────────────────────────────────────────
   let reconnectAttempt = 0;
@@ -105,10 +108,18 @@ export default function (pi: ExtensionAPI) {
 
   // ── Shared send helpers ──────────────────────────────────────────────────
 
+  // Where activity should be mirrored right now: the channel that started the
+  // current turn, or — when echo is enabled — the session channel for turns
+  // typed in the pi terminal.
+  function mirrorTargetChannelId(): string | null {
+    return pendingReplyChannelId ?? (activeConfig?.echo ? runtime.activeChannelId : null);
+  }
+
   async function sendToActiveChannel(text: string): Promise<void> {
-    if (!client || !pendingReplyChannelId) return;
+    const channelId = mirrorTargetChannelId();
+    if (!client || !channelId) return;
     try {
-      const channel = (await client.channels.fetch(pendingReplyChannelId)) as TextChannel | null;
+      const channel = (await client.channels.fetch(channelId)) as TextChannel | null;
       if (!channel?.isTextBased()) return;
       await (channel as TextChannel).send(text);
     } catch (err) {
@@ -343,10 +354,37 @@ export default function (pi: ExtensionAPI) {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("message_end", async (event: any) => {
-    if (!pendingReplyChannelId) return;
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const content = event.message.content as Array<any>;
+
+    if (event.message.role === "user") {
+      const text = content
+        .filter((c) => c.type === "text" && typeof c.text === "string")
+        .map((c) => c.text as string)
+        .join("");
+      if (!text.trim()) return;
+      // A prompt we injected from Discord — consume it so echo doesn't bounce
+      // it back into the channel it came from.
+      if (injectedQueue.length && injectedQueue[0] === text) {
+        injectedQueue.shift();
+        return;
+      }
+      // A prompt typed in the pi terminal — mirror it when echo is enabled.
+      if (activeConfig?.echo && client && runtime.activeChannelId) {
+        try {
+          const channel = (await client.channels.fetch(runtime.activeChannelId)) as TextChannel | null;
+          if (channel?.isTextBased()) {
+            const prefix = "🖥️ **You** (terminal): ";
+            for (const chunk of splitMessage(prefix + text)) {
+              await (channel as TextChannel).send(chunk);
+            }
+          }
+        } catch (err) {
+          console.error("[pi-discord-remote] Failed to echo user message:", err);
+        }
+      }
+      return;
+    }
 
     // Collect text from assistant messages
     if (event.message.role === "assistant") {
@@ -362,8 +400,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", async (_event: any) => {
     agentBusy = false;
 
-    if (!pendingReplyChannelId || !client) {
+    const targetChannelId = mirrorTargetChannelId();
+    if (!targetChannelId || !client) {
       pendingReplyChannelId = null;
+      pendingReplyUserId = null;
       collectedAssistantText = [];
       return;
     }
@@ -567,7 +607,9 @@ export default function (pi: ExtensionAPI) {
         message.member?.displayName ??
         message.author.displayName ??
         message.author.username;
-      pi.sendUserMessage(`[${authorName}]: ${message.content}`);
+      const injected = `[${authorName}]: ${message.content}`;
+      injectedQueue.push(injected);
+      pi.sendUserMessage(injected);
     };
   }
 

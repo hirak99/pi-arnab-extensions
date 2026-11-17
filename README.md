@@ -6,6 +6,47 @@
 
 Each time you run `/pi-discord-remote start`, the extension automatically creates a **new Discord text channel** named after your current project + date (e.g. `kaleidoscope-may09`). Messages sent in that channel are injected into Pi as user prompts; Pi's responses are posted back. When you stop, the channel is deleted — keeping your server clean within Discord's channel limit.
 
+## Fork additions
+
+Everything in this section is **not in upstream** — it exists only in this fork.
+
+### Message attribution
+
+Prompts received from Discord are attributed to their author, so the agent
+knows who is driving: messages arrive in Pi as `[Name]: <text>`. The name is
+resolved from the `displayNames` config map (keyed by user ID) first, then the
+server nickname, then the global display name, then the `@username`.
+
+| Config key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `displayNames` | object | `{}` | Display-name overrides keyed by Discord user ID, e.g. `{ "123…": "Arnab" }`. Wins over nickname / global name / username |
+
+### Echo (two-way mirror)
+
+By default the channel only shows turns that started in Discord. With
+`"echo": true` in the config, everything is mirrored both ways:
+
+- prompts typed in the Pi terminal appear in the channel as `🖥️ **You** (terminal): …`
+- the agent's replies to those turns are posted when the turn ends
+- tool-call labels (and tool results, if `toolResponses` is on) stream in as usual
+
+Messages sent from Discord are not echoed back — the channel already shows
+them.
+
+| Config key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `echo` | boolean | `false` | Mirror terminal-originated turns into the Discord channel |
+
+### Connection diagnostic
+
+`test-connect.mjs` (repo root) attempts the same gateway login the extension
+performs and reports exactly which of token / intents / guild / permissions
+is failing — without printing the token:
+
+```bash
+node test-connect.mjs
+```
+
 ## Install
 
 ```bash

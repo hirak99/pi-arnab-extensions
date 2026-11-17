@@ -27,6 +27,11 @@ export interface Config {
   /** Optional display-name overrides keyed by Discord user ID, e.g. { "123…": "Arnab" }.
    * Matched first, before nickname / global name / username fallbacks. */
   displayNames?: Record<string, string>;
+  /** Mirror session activity that did NOT originate from Discord into the
+   * channel: prompts typed in the pi terminal, their tool-call labels, and
+   * the assistant's replies (default: false — only Discord-originated turns
+   * are mirrored). */
+  echo?: boolean;
 }
 
 export async function loadConfig(): Promise<Config | null> {
