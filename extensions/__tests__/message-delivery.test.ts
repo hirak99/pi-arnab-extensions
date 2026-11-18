@@ -187,6 +187,22 @@ describe("append-only transcript delivery", () => {
     expect(discord.channel.sendTyping).toHaveBeenCalledTimes(3);
   });
 
+  it("reports aborted agent runs to the persistent session channel", async () => {
+    discord.echo = false;
+    const harness = createHarness();
+    await harness.start();
+
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+    await harness.emit("agent_settled", { aborted: false });
+    expect(discord.sent).toEqual([]);
+
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+    await harness.emit("agent_settled", { aborted: true });
+    expect(discord.sent).toEqual(["🛑 Agent interrupted"]);
+  });
+
   it("posts tool-start summaries but never tool results", async () => {
     const harness = createHarness();
     await harness.start();

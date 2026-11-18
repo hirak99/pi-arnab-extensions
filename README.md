@@ -103,6 +103,12 @@ automatically. Refreshing stops at `agent_end`, on disconnect, and during
 shutdown. Discord has no explicit stop-typing API, so an already-sent indicator
 can linger briefly after work finishes.
 
+### Interruptions
+
+When `agent_settled` reports `aborted: true`, the persistent session channel
+receives `🛑 Agent interrupted`. Abortion can come from a human, an extension,
+or session shutdown, so the notice deliberately does not claim a human cause.
+
 ### Subagent activity
 
 When `pi-subagents` is installed, top-level subagent activity is reported in

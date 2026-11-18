@@ -566,10 +566,16 @@ export default function (pi: ExtensionAPI) {
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pi.on("agent_settled", async (_event: any) => {
+  pi.on("agent_settled", async (event: any) => {
     // No remaining automatic work (runs, retries, steering, follow-ups) —
     // the session is truly idle and new Discord messages start fresh turns.
     agentBusy = false;
+    if (event?.aborted) {
+      await sendToActiveChannel(
+        "🛑 Agent interrupted",
+        runtime.activeChannelId ?? mirrorTargetChannelId() ?? undefined,
+      );
+    }
   });
 
   // ── Auto-connect on new/resumed sessions (per-project opt-in) ────────
