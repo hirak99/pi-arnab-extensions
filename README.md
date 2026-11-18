@@ -57,7 +57,7 @@ are injected with no prefix at all.
 By default the channel only shows turns that started in Discord. With
 `"echo": true` in the config, everything is mirrored both ways:
 
-- prompts typed in the Pi terminal appear in the channel as `🖥️ **You** (terminal): …`,
+- prompts typed in the Pi terminal appear in the channel as `🖥️ **Terminal**: …`,
   with a horizontal-rule divider appended so the boundary before the agent's reply is clear
 - the agent's replies to those turns are posted as completed messages,
   each appended independently in transcript order when it finishes

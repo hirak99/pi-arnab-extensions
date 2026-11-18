@@ -638,7 +638,7 @@ export default function (pi: ExtensionAPI) {
         try {
           const channel = (await client.channels.fetch(runtime.activeChannelId)) as TextChannel | null;
           if (channel?.isTextBased()) {
-            const prefix = "🖥️ **You** (terminal): ";
+            const prefix = "🖥️ **Terminal**: ";
             const chunks = splitMessage(prefix + text);
             chunks[chunks.length - 1] += "\n\n" + TURN_DIVIDER;
             for (const chunk of chunks) {

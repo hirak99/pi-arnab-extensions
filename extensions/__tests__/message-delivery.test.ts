@@ -184,14 +184,14 @@ describe("append-only transcript delivery", () => {
 
     expect(discord.sent).toEqual([
       "A: before steering",
-      `🖥️ **You** (terminal): B: steering message\n\n${DIVIDER}`,
+      `🖥️ **Terminal**: B: steering message\n\n${DIVIDER}`,
       "C: after steering",
     ]);
 
     await harness.emit("agent_end");
     expect(discord.sent).toEqual([
       "A: before steering",
-      `🖥️ **You** (terminal): B: steering message\n\n${DIVIDER}`,
+      `🖥️ **Terminal**: B: steering message\n\n${DIVIDER}`,
       "C: after steering",
       DIVIDER,
     ]);
