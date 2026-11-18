@@ -2,17 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const discord = vi.hoisted(() => {
   const sent: string[] = [];
+  const recordSend = async (text: string) => {
+    sent.push(text);
+    return { id: `message-${sent.length}` };
+  };
   const channel = {
     id: "channel-1",
     name: "test-channel",
     isTextBased: () => true,
-    send: vi.fn(async (text: string) => {
-      sent.push(text);
-      return { id: `message-${sent.length}` };
-    }),
+    send: vi.fn(recordSend),
     sendTyping: vi.fn(async () => {}),
   };
-  return { sent, channel };
+  return { sent, channel, recordSend, echo: true };
 });
 
 vi.mock("discord.js", async () => {
@@ -52,7 +53,7 @@ vi.mock("../config.js", () => ({
   loadEffectiveConfig: vi.fn(async () => ({
     token: "test-token",
     guildId: "guild-1",
-    echo: true,
+    echo: discord.echo,
   })),
   loadChannelBindings: vi.fn(async () => ({})),
   saveChannelBinding: vi.fn(),
@@ -68,9 +69,15 @@ type CommandHandler = (args: string, ctx: any) => Promise<void>;
 
 function createHarness() {
   const handlers = new Map<string, EventHandler>();
+  const busHandlers = new Map<string, (event: any) => unknown>();
   let commandHandler: CommandHandler | undefined;
   const pi = {
-    events: { on: vi.fn(() => () => {}) },
+    events: {
+      on: vi.fn((name: string, handler: (event: any) => unknown) => {
+        busHandlers.set(name, handler);
+        return () => busHandlers.delete(name);
+      }),
+    },
     on: vi.fn((name: string, handler: EventHandler) => {
       handlers.set(name, handler);
     }),
@@ -96,6 +103,11 @@ function createHarness() {
       if (!handler) throw new Error(`No handler registered for ${name}`);
       await handler(event);
     },
+    async emitBus(name: string, event: any = {}) {
+      const handler = busHandlers.get(name);
+      if (!handler) throw new Error(`No bus handler registered for ${name}`);
+      await handler(event);
+    },
   };
 }
 
@@ -108,7 +120,9 @@ const DIVIDER = "────────────────────";
 describe("append-only transcript delivery", () => {
   beforeEach(() => {
     discord.sent.length = 0;
+    discord.echo = true;
     vi.clearAllMocks();
+    discord.channel.send.mockImplementation(discord.recordSend);
   });
 
   afterEach(() => {
@@ -188,6 +202,81 @@ describe("append-only transcript delivery", () => {
     });
 
     expect(discord.sent).toEqual(["📝 writing to `/tmp/example.txt`"]);
+  });
+
+  it("reports short-lived and idle subagent completions without echo", async () => {
+    discord.echo = false;
+    const harness = createHarness();
+    await harness.start();
+    await harness.emitBus("subagents:ready");
+
+    await harness.emitBus("subagents:started", {
+      id: "agent-a",
+      type: "general-purpose",
+      description: "Review authentication flow",
+    });
+    await harness.emitBus("subagents:completed", { id: "agent-a" });
+    await harness.emitBus("subagents:started", { id: "agent-b", type: "Explore" });
+    await harness.emitBus("subagents:failed", { id: "agent-b" });
+
+    expect(discord.sent).toEqual([
+      "✅ Finished: Review authentication flow",
+      "❌ Failed: Explore",
+    ]);
+  });
+
+  it("marks new and previously reported subagents in every running snapshot", async () => {
+    const harness = createHarness();
+    await harness.start();
+    await harness.emitBus("subagents:ready");
+    await harness.emitBus("subagents:started", {
+      id: "agent-a",
+      description: "Research API",
+    });
+    await harness.emitBus("subagents:started", {
+      id: "agent-b",
+      description: "Inspect parser",
+    });
+
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+
+    expect(discord.sent).toEqual([
+      DIVIDER,
+      "🤖 2 subagents working…\n🆕 Research API\n🆕 Inspect parser",
+      DIVIDER,
+      "🤖 2 subagents working…\n⏳ Research API\n⏳ Inspect parser",
+    ]);
+  });
+
+  it("serializes immediate subagent completion messages", async () => {
+    const pendingSends: Array<() => void> = [];
+    discord.channel.send.mockImplementation(
+      (text: string) =>
+        new Promise<{ id: string }>((resolve) => {
+          pendingSends.push(() => {
+            discord.sent.push(text);
+            resolve({ id: `message-${discord.sent.length}` });
+          });
+        }),
+    );
+    const harness = createHarness();
+    await harness.start();
+    await harness.emitBus("subagents:ready");
+    await harness.emitBus("subagents:started", { id: "agent-a", description: "First task" });
+    await harness.emitBus("subagents:started", { id: "agent-b", description: "Second task" });
+
+    const first = harness.emitBus("subagents:completed", { id: "agent-a" });
+    const second = harness.emitBus("subagents:completed", { id: "agent-b" });
+    await vi.waitFor(() => expect(pendingSends).toHaveLength(1));
+    pendingSends.shift()!();
+    await vi.waitFor(() => expect(pendingSends).toHaveLength(1));
+    pendingSends.shift()!();
+    await Promise.all([first, second]);
+
+    expect(discord.sent).toEqual(["✅ Finished: First task", "✅ Finished: Second task"]);
   });
 
   it("skips empty assistant messages and their completion footer", async () => {

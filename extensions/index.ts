@@ -117,10 +117,10 @@ export default function (pi: ExtensionAPI) {
   interface RunningSubagent {
     type?: string;
     description?: string;
+    reported: boolean;
   }
   const runningSubagents = new Map<string, RunningSubagent>();
-  /** True once the "N subagents working" notice has been posted for the current streak. */
-  let subagentNoticePosted = false;
+  let subagentReportQueue: Promise<void> = Promise.resolve();
 
   // Display name for a subagent: its short task description wins, falling
   // back to the agent type, then to a generic label.
@@ -137,42 +137,42 @@ export default function (pi: ExtensionAPI) {
     }),
     pi.events.on("subagents:started", (event: any) => {
       if (event?.id) {
-        runningSubagents.set(event.id, { type: event?.type, description: event?.description });
+        runningSubagents.set(event.id, {
+          type: event?.type,
+          description: event?.description,
+          reported: false,
+        });
       }
     }),
     pi.events.on("subagents:completed", (event: any) => {
-      void onSubagentSettled(event);
+      return onSubagentSettled(event, true);
     }),
     pi.events.on("subagents:failed", (event: any) => {
-      void onSubagentSettled(event);
+      return onSubagentSettled(event, false);
     }),
     // Terminal event of a session: every agent has been stopped. Reset all
     // state so a later session_start in the same process starts clean.
     pi.events.on("subagents:disposed", () => {
       subagentsAvailable = false;
       runningSubagents.clear();
-      subagentNoticePosted = false;
     }),
   );
 
-  async function onSubagentSettled(event: any): Promise<void> {
+  function queueSubagentReport(text: string): Promise<void> {
+    const report = subagentReportQueue.then(() => sendSubagentStatus(text));
+    subagentReportQueue = report;
+    return report;
+  }
+
+  function onSubagentSettled(event: any, succeeded: boolean): Promise<void> | undefined {
     if (!event?.id) return;
     const meta = runningSubagents.get(event.id);
     // Unknown id — either never tracked or already settled. Ignore.
     if (!meta) return;
     runningSubagents.delete(event.id);
-    // Only announce completions the user was set up to expect: if no
-    // "working" notice went out, the agent finished before the turn ended
-    // and its result is already in the reply.
-    if (!subagentNoticePosted) return;
-    if (runningSubagents.size > 0) {
-      await sendToActiveChannel(
-        `✅ Subagent finished: ${subagentLabel(meta)} (${runningSubagents.size} still working…)`,
-      );
-      return;
-    }
-    subagentNoticePosted = false;
-    await sendToActiveChannel("✅ All subagents finished working.");
+    // Always announce completion, including agents that started and finished
+    // within one turn and agents that finish after Pi has become idle.
+    return queueSubagentReport(`${succeeded ? "✅ Finished" : "❌ Failed"}: ${subagentLabel(meta)}`);
   }
 
   function clearQuestionState(): void {
@@ -240,8 +240,8 @@ export default function (pi: ExtensionAPI) {
     scheduleDiscordTypingRefresh();
   }
 
-  async function sendToActiveChannel(text: string): Promise<void> {
-    const channelId = mirrorTargetChannelId();
+  async function sendToActiveChannel(text: string, targetChannelId?: string): Promise<void> {
+    const channelId = targetChannelId ?? mirrorTargetChannelId();
     if (!client || !channelId) return;
     try {
       const channel = (await client.channels.fetch(channelId)) as TextChannel | null;
@@ -253,21 +253,27 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // Called at the end of each turn. Announces subagents still running in the
-  // background (once per streak) so Discord users know the session isn't idle;
-  // the matching "all finished" line is sent from onSubagentSettled.
-  async function maybePostSubagentNotice(): Promise<void> {
-    if (!subagentsAvailable || subagentNoticePosted || runningSubagents.size === 0) return;
-    subagentNoticePosted = true;
-    const n = runningSubagents.size;
-    const MAX_LISTED = 10;
-    const lines = [...runningSubagents.values()]
-      .slice(0, MAX_LISTED)
-      .map((meta) => `• ${subagentLabel(meta)}`);
-    if (n > MAX_LISTED) lines.push(`• …and ${n - MAX_LISTED} more`);
-    await sendToActiveChannel(
-      `🤖 ${n} subagent${n === 1 ? "" : "s"} working…\n${lines.join("\n")}`,
-    );
+  // Subagent updates belong to the persistent session channel, including
+  // completions that arrive after the originating turn's reply state is cleared.
+  async function sendSubagentStatus(text: string): Promise<void> {
+    await sendToActiveChannel(text, runtime.activeChannelId ?? mirrorTargetChannelId() ?? undefined);
+  }
+
+  // Snapshot all running agents at each agent_end. New entries are marked only
+  // in the first snapshot; subsequent snapshots show them as still running.
+  async function postRunningSubagents(): Promise<void> {
+    if (!subagentsAvailable || runningSubagents.size === 0) return;
+    const entries = [...runningSubagents.values()];
+    const n = entries.length;
+    const lines = entries.map((meta) => {
+      const marker = meta.reported ? "⏳" : "🆕";
+      meta.reported = true;
+      return `${marker} ${subagentLabel(meta)}`;
+    });
+    const text = `🤖 ${n} subagent${n === 1 ? "" : "s"} working…\n${lines.join("\n")}`;
+    for (const chunk of splitMessage(text)) {
+      await queueSubagentReport(chunk);
+    }
   }
 
   function getTargetChannelId(overrideChannelId?: string): string | null {
@@ -548,12 +554,13 @@ export default function (pi: ExtensionAPI) {
 
     // Replies have already been posted at message_end. Keep the completion
     // mention and visual boundary as run-level metadata, not a reply buffer.
-    if (postedAssistantReply) {
+    const hasRunningSubagents = subagentsAvailable && runningSubagents.size > 0;
+    if (postedAssistantReply || hasRunningSubagents) {
       const mention = pendingReplyUserId ? `<@${pendingReplyUserId}> ` : "";
       await sendToActiveChannel(mention + TURN_DIVIDER);
       postedAssistantReply = false;
     }
-    await maybePostSubagentNotice();
+    await postRunningSubagents();
     pendingReplyChannelId = null;
     pendingReplyUserId = null;
   });

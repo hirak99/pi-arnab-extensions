@@ -103,6 +103,19 @@ automatically. Refreshing stops at `agent_end`, on disconnect, and during
 shutdown. Discord has no explicit stop-typing API, so an already-sent indicator
 can linger briefly after work finishes.
 
+### Subagent activity
+
+When `pi-subagents` is installed, top-level subagent activity is reported in
+the persistent session channel:
+
+- starts update internal state without posting an immediate message
+- every `agent_end` posts all currently running subagents below the turn
+  divider: 🆕 for the first snapshot and ⏳ for previously reported agents
+- completions and failures always post immediately as ✅/❌ messages, including
+  short-lived agents and agents that finish while Pi is idle
+- reports use the trimmed task description (up to 80 characters), falling back
+  to the agent type; completion messages are serialized to preserve order
+
 ### Auto-start (per-project opt-in)
 
 By default nothing connects until you run `/pi-discord-remote start`. A

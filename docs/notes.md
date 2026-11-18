@@ -102,6 +102,8 @@ mention/divider footer, so steering messages cannot merge adjacent replies.
 Tool-call starts are posted as short emoji/path summaries; commands, search
 patterns, and tool results are never mirrored. Discord typing follows Pi's
 `Working` lifecycle (`turn_start` to `agent_end`) with an 8-second refresh.
+Subagents post immediate ✅/❌ completions and an `agent_end` running snapshot
+(🆕 new, ⏳ previously reported), using descriptions with a type fallback.
 
 See the README's "Fork additions" section for full descriptions.
 
