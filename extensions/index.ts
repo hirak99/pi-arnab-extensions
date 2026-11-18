@@ -75,26 +75,12 @@ export default function (pi: ExtensionAPI) {
   let agentBusy = false;
   let pendingReplyChannelId: string | null = null;
   let pendingReplyUserId: string | null = null;
-  let collectedAssistantText: string[] = [];
   let postedThinkingNotice = false;
+  let postedAssistantReply = false;
   let lastImageArtifactPath: string | null = null;
   // Raw texts of prompts we injected from Discord, awaiting their message_end.
   // Used to keep echo from bouncing Discord-originated messages back to Discord.
   const injectedQueue: string[] = [];
-
-  // ── Streaming reply state (stream: true) ─────────────────────────────
-  // One Discord message edited in place as assistant text streams in.
-  // A turn can produce several assistant messages (text, then tool calls,
-  // then more text) — each streams separately, so segments are accumulated
-  // per assistant message and joined for the buffer view.
-  let streamBufferId: string | null = null;
-  let streamText = "";
-  let streamSegments: string[] = [];
-  let streamSegmentId: string | null = null;
-  let streamLastEditAt = 0;
-  let streamEditTimer: ReturnType<typeof setTimeout> | null = null;
-  const STREAM_EDIT_INTERVAL_MS = 1000;
-  const STREAM_PREVIEW_MAX = 1900; // Discord message cap is 2000; leave headroom
 
   // Visual turn boundary in the channel. Unicode box-drawing horizontal line —
   // renders as a line unconditionally, unlike '---' which depends on Discord's
@@ -200,86 +186,6 @@ export default function (pi: ExtensionAPI) {
     questionResolver = null;
     questionRejecter = null;
     questionChannelId = null;
-  }
-
-  // ── Streaming reply helpers (stream: true) ─────────────────────────────
-
-  // The live view is the tail of the accumulated text — Discord caps messages
-  // at 2000 chars, so earlier prose is only in the final full post.
-  function streamPreview(text: string): string {
-    return text.length > STREAM_PREVIEW_MAX ? "…" + text.slice(-STREAM_PREVIEW_MAX) : text;
-  }
-
-  function resetStreamState(): void {
-    if (streamEditTimer) {
-      clearTimeout(streamEditTimer);
-      streamEditTimer = null;
-    }
-    streamBufferId = null;
-    streamText = "";
-    streamSegments = [];
-    streamSegmentId = null;
-  }
-
-  // Post the buffer message if it doesn't exist yet.
-  async function ensureStreamBuffer(): Promise<void> {
-    if (streamBufferId || !client) return;
-    const channelId = mirrorTargetChannelId();
-    if (!channelId) return;
-    try {
-      const channel = (await client.channels.fetch(channelId)) as TextChannel | null;
-      if (!channel?.isTextBased()) return;
-      const msg = await (channel as TextChannel).send(streamPreview(streamText) || "💭 _Thinking…_");
-      streamBufferId = msg.id;
-      streamLastEditAt = Date.now();
-    } catch (err) {
-      console.error("[pi-discord-remote] Failed to create stream buffer:", err);
-    }
-  }
-
-  // Edit the buffer in place, throttled to respect Discord rate limits.
-  // A trailing timer flushes the latest text if edits arrive faster than the
-  // interval. Degrades gracefully: on failure the final full post still goes
-  // out via the normal agent_end path.
-  async function flushStreamEdit(force = false): Promise<void> {
-    if (!streamBufferId || !client) return;
-    const now = Date.now();
-    if (!force && now - streamLastEditAt < STREAM_EDIT_INTERVAL_MS) {
-      if (!streamEditTimer) {
-        const wait = STREAM_EDIT_INTERVAL_MS - (now - streamLastEditAt);
-        streamEditTimer = setTimeout(() => {
-          streamEditTimer = null;
-          void flushStreamEdit(true);
-        }, wait);
-      }
-      return;
-    }
-    const bufferId = streamBufferId;
-    try {
-      const msg = await client.channels
-        .fetch(mirrorTargetChannelId()!)
-        .then((c) => (c as TextChannel).messages.fetch(bufferId));
-      await msg.edit(streamPreview(streamText));
-      streamLastEditAt = Date.now();
-    } catch (err) {
-      console.error("[pi-discord-remote] Stream edit failed:", err);
-    }
-  }
-
-  // Delete the buffer when the run ends — the full reply is posted below it,
-  // so keeping the tail preview would read as duplication.
-  async function deleteStreamBuffer(bufferId: string): Promise<void> {
-    if (!client) return;
-    try {
-      const channelId = mirrorTargetChannelId();
-      if (!channelId) return;
-      const channel = (await client.channels.fetch(channelId)) as TextChannel | null;
-      if (channel?.isTextBased()) {
-        await (channel as TextChannel).messages.delete(bufferId);
-      }
-    } catch (err) {
-      console.error("[pi-discord-remote] Failed to delete stream buffer:", err);
-    }
   }
 
   // ── Shared send helpers ──────────────────────────────────────────────────
@@ -474,15 +380,14 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // ── Collect assistant output ──────────────────────────────────────────────
+  // ── Mirror assistant output ───────────────────────────────────────────────
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("agent_start", async (_event: any) => {
     agentBusy = true;
-    collectedAssistantText = [];
     postedThinkingNotice = false;
+    postedAssistantReply = false;
     lastImageArtifactPath = null;
-    resetStreamState();
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -530,35 +435,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_update", async (event: any) => {
     if (!mirrorTargetChannelId()) return;
     if (event.message.role !== "assistant") return;
-
-    // Streaming mode: track the accumulated assistant text and edit the
-    // buffer message in place (throttled). The buffer doubles as the
-    // thinking indicator, so the 💭 notice is skipped.
-    if (activeConfig?.stream) {
-      const text = (event.message.content as Array<any>)
-        .filter((c: any) => c.type === "text" && typeof c.text === "string")
-        .map((c: any) => c.text as string)
-        .join("");
-      if (text.trim()) {
-        // Track which assistant message is streaming; a new one (e.g. after a
-        // tool call) starts a new segment instead of replacing the buffer.
-        const msgId = (event.message as { id?: string }).id ?? null;
-        const isNewSegment =
-          streamSegments.length === 0 ||
-          (msgId
-            ? msgId !== streamSegmentId
-            : text.length < streamSegments[streamSegments.length - 1].length);
-        if (isNewSegment) {
-          streamSegments.push("");
-          streamSegmentId = msgId;
-        }
-        streamSegments[streamSegments.length - 1] = text;
-        streamText = streamSegments.filter((s) => s.trim()).join("\n\n");
-        await ensureStreamBuffer();
-        await flushStreamEdit();
-      }
-      return;
-    }
 
     if (postedThinkingNotice) return;
     const hasThinking = (event.message.content as Array<{ type: string }>)
@@ -613,13 +489,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Collect text from assistant messages
+    // Mirror each completed assistant message independently. Steering user
+    // messages therefore appear between the replies that preceded and followed
+    // them, exactly as they do in Pi's transcript.
     if (event.message.role === "assistant") {
       const text = content
         .filter((c) => c.type === "text" && typeof c.text === "string")
         .map((c) => c.text as string)
-        .join("");
-      if (text.trim()) collectedAssistantText.push(text);
+        .join("")
+        .trim();
+      if (!text || !mirrorTargetChannelId() || !client) return;
+      for (const chunk of splitMessage(text)) {
+        await sendToActiveChannel(chunk);
+      }
+      postedAssistantReply = true;
     }
   });
 
@@ -627,41 +510,20 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", async (_event: any) => {
     // agentBusy stays true here — steering or follow-up work can start another
     // run right after agent_end. It is released by agent_settled.
-    const streamBufferToDelete = streamBufferId;
-    resetStreamState();
-
     const targetChannelId = mirrorTargetChannelId();
     if (!targetChannelId || !client) {
       pendingReplyChannelId = null;
       pendingReplyUserId = null;
-      collectedAssistantText = [];
+      postedAssistantReply = false;
       return;
     }
 
-    const text = collectedAssistantText.join("\n\n").trim();
-    // Clear state before sending so sendToActiveChannel still sees the channel ID
-    collectedAssistantText = [];
-    // pendingReplyChannelId cleared after send below
-
-    if (!text) {
-      await maybePostSubagentNotice();
-      pendingReplyChannelId = null;
-      pendingReplyUserId = null;
-      return;
-    }
-
-    const chunks = splitMessage(text);
-    // Prepend a mention to the last chunk so the sender is notified when work is done
-    const mention = pendingReplyUserId ? `<@${pendingReplyUserId}> ` : "";
-    const lastIdx = chunks.length - 1;
-    chunks[lastIdx] = mention + chunks[lastIdx] + "\n\n" + TURN_DIVIDER;
-
-    for (const chunk of chunks) {
-      await sendToActiveChannel(chunk);
-    }
-    // Replace the live buffer with the complete reply.
-    if (streamBufferToDelete) {
-      await deleteStreamBuffer(streamBufferToDelete);
+    // Replies have already been posted at message_end. Keep the completion
+    // mention and visual boundary as run-level metadata, not a reply buffer.
+    if (postedAssistantReply) {
+      const mention = pendingReplyUserId ? `<@${pendingReplyUserId}> ` : "";
+      await sendToActiveChannel(mention + TURN_DIVIDER);
+      postedAssistantReply = false;
     }
     await maybePostSubagentNotice();
     pendingReplyChannelId = null;
@@ -912,7 +774,6 @@ export default function (pi: ExtensionAPI) {
 
       pendingReplyChannelId = message.channelId;
       pendingReplyUserId = message.author.id;
-      collectedAssistantText = [];
       injectedQueue.push(injected);
       pi.sendUserMessage(injected);
     };

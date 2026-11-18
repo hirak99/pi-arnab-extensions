@@ -87,9 +87,6 @@ ever moves. Commit early; push when you want the work backed up remotely.
   divider marking the boundary before the agent's reply.
 - `steer: true` — Discord messages sent mid-turn are injected into the
   running turn (delivered before the agent's next LLM call), not dropped.
-- `stream: true` — assistant text streams into a buffer message edited in
-  place (throttled 1/s, tail preview); at turn end the full reply posts and
-  the buffer is deleted.
 - `autoStart: true` (per-project `.pi/discord-remote.json`) — connect
   automatically when a new/resumed session starts in that project.
 - `staticChannel: true` (same file) — keep the project's channel across
@@ -99,16 +96,14 @@ ever moves. Commit early; push when you want the work backed up remotely.
   with or without static mode. Changing it renames the bound channel on the
   next session (binding is by ID — history moves with the rename).
 
+Assistant output is append-only: each completed assistant message is posted
+at `message_end`, in transcript order. `agent_end` adds only the completion
+mention/divider footer, so steering messages cannot merge adjacent replies.
+
 See the README's "Fork additions" section for full descriptions.
 
 ## Possible follow-ups
 
-- **Streamed-reply hybrid** — for replies under ~1900 chars, skip the
-  delete-and-replace: just edit the buffer to the final text (mention
-  included) so most turns end with a single settled message.
-- **Buffer re-pinning** — the stream buffer is created before any tool call,
-  so it sits above tool labels for the rest of the turn. Re-pinning it
-  below after each tool call costs extra API calls; currently accepted.
 - **True abort (`!`-style interrupt)** — kill a running tool/turn on demand.
   Blocked: pi exposes `ctx.abort()` only inside event-handler contexts, not
   to the Discord message path. Candidate for an upstream pi feature request.

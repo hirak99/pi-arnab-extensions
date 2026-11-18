@@ -45,11 +45,6 @@ export interface Config {
    * call) instead of replying "please wait" and dropping them
    * (default: false). */
   steer?: boolean;
-  /** Stream the assistant's in-progress text into a single Discord message
-   * edited in place (throttled to respect rate limits; the live view shows
-   * the text tail, the full reply is still posted when the turn ends)
-   * (default: false). */
-  stream?: boolean;
   /** Connect to Discord automatically when a new or resumed session starts
    * (default: false — connect only via /pi-discord-remote start). Intended
    * as a per-project opt-in in .pi/discord-remote.json, but honored in the

@@ -35,7 +35,7 @@ ln -sfn ~/git/pi-discord-remote ~/.pi/agent/extensions/pi-discord-remote
 Note: pi's `/reload` does **not** pick up rebuilt extension code (module
 caching). After `npm run build`, restart pi, then `/pi-discord-remote start`.
 
-Fork-only config keys used below: `displayNames`, `echo`, `steer`, `stream`,
+Fork-only config keys used below: `displayNames`, `echo`, `steer`,
 `autoStart`, `staticChannel`, `channelName`. For day-to-day operations — reconnecting after a reboot,
 diagnosing failures, the fork dev loop — see [docs/notes.md](docs/notes.md).
 
@@ -58,10 +58,13 @@ By default the channel only shows turns that started in Discord. With
 `"echo": true` in the config, everything is mirrored both ways:
 
 - prompts typed in the Pi terminal appear in the channel as `🖥️ **You** (terminal): …`,
-  with a horizontal-rule divider appended so the boundary before the agent's reply
-  is clear; the agent's reply likewise ends with a divider, marking the turn boundary
-- the agent's replies to those turns are posted when the turn ends
-- tool-call labels (and tool results, if `toolResponses` is on) stream in as usual
+  with a horizontal-rule divider appended so the boundary before the agent's reply is clear
+- the agent's replies to those turns are posted as completed messages,
+  each appended independently in transcript order when it finishes
+- a standalone divider closes the run; Discord-originated runs include the
+  sender's completion mention in that footer
+- tool-call labels (and tool results, if `toolResponses` is on) post as
+  separate messages alongside the replies
 
 Messages sent from Discord are not echoed back — the channel already shows
 them.
@@ -90,23 +93,6 @@ arriving between sub-runs steer correctly instead of being rejected.
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
 | `steer` | boolean | `false` | Inject Discord messages received mid-turn into the running turn |
-
-### Streaming replies
-
-By default the assistant's text is collected during a turn and only posted
-when the run ends. With `"stream": true`, the in-progress text is mirrored
-live: the extension posts one buffer message per run and edits it in place as
-text streams in (throttled to one edit per second for Discord's rate limits).
-The live view shows the text tail (last ~1900 chars, prefixed with "…"). When
-the run ends, the complete reply is posted as a normal message — with the
-usual @mention for Discord-originated turns — and the buffer is deleted, so
-the channel keeps a single clean copy. Tool-call labels keep posting as
-separate messages alongside the buffer. Applies to both Discord-originated
-and echoed terminal turns.
-
-| Config key | Type | Default | Description |
-|------------|------|---------|-------------|
-| `stream` | boolean | `false` | Stream assistant text into a live-edited Discord message |
 
 ### Auto-start (per-project opt-in)
 
@@ -259,7 +245,7 @@ Edit config with `/pi-discord-remote open-config`.
 The extension loads silently on Pi startup — no channel is created until you explicitly run the command.
 
 - **`/pi-discord-remote start`** — bot logs in, creates a text channel named `<project>-<mon><dd>-<HHMM>`, and starts listening there only
-- **Incoming message** — injected as a user prompt into the active Pi session; bot reacts ⏳ while Pi works, then posts the full response back
+- **Incoming message** — injected as a user prompt into the active Pi session; bot reacts ⏳ while Pi works, then posts the completed response back. Each assistant reply is appended as its own message, in transcript order, when it completes (no live editing)
 - **Tool calls** — each tool invocation is labeled (🔧 bash, 📄 read, ✏️ edit, etc.) with a detail line; if `toolResponses` is on, results follow as ↩️/❌ code blocks
 - **`/pi-discord-remote stop`** (or Pi exit) — channel is deleted, bot disconnects
 
