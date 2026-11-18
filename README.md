@@ -63,8 +63,8 @@ By default the channel only shows turns that started in Discord. With
   each appended independently in transcript order when it finishes
 - a standalone divider closes the run; Discord-originated runs include the
   sender's completion mention in that footer
-- tool-call labels (and tool results, if `toolResponses` is on) post as
-  separate messages alongside the replies
+- tool-call starts post as short, emoji-labeled summaries alongside the replies;
+  tool results are never mirrored
 
 Messages sent from Discord are not echoed back — the channel already shows
 them.
@@ -93,6 +93,15 @@ arriving between sub-runs steer correctly instead of being rejected.
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
 | `steer` | boolean | `false` | Inject Discord messages received mid-turn into the running turn |
+
+### Working / typing feedback
+
+While Pi displays its built-in `⠏ Working` indicator (`turn_start` through
+`agent_end`), the mirrored Discord channel shows the bot's native typing
+indicator. It is refreshed every 8 seconds because Discord expires typing
+automatically. Refreshing stops at `agent_end`, on disconnect, and during
+shutdown. Discord has no explicit stop-typing API, so an already-sent indicator
+can linger briefly after work finishes.
 
 ### Auto-start (per-project opt-in)
 
@@ -210,7 +219,6 @@ pi install npm:pi-discord-remote
 | Guild (Server) ID | Right-click server → Copy Server ID (needs Developer Mode) |
 | Category ID | Right-click a category → Copy Category ID (optional — channels go to server root otherwise) |
 | Allowed user IDs | Right-click a user → Copy User ID (leave empty to allow everyone) |
-| Tool responses | Send tool outputs (results/errors) to Discord alongside tool-call labels? (y/n, default: no) |
 
 Config is stored at `~/.pi/agent/pi-discord-remote/config.json`.
 
@@ -233,7 +241,6 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `categoryId` | string | — | Optional category for auto-created channels |
 | `allowedUserIds` | string[] | `[]` | Allow-list of Discord user IDs (empty = everyone) |
 | `reactions` | boolean | `true` | React with ⏳ while processing |
-| `toolResponses` | boolean | `false` | Also post tool outputs/results alongside tool-call labels (truncated to ≤400 chars) |
 | `autoStart` | boolean | `false` | Connect automatically on new/resumed session start — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
 | `staticChannel` | boolean | `false` | Keep the channel across sessions (lock read-only on end, reuse on next session) — see above |
 | `channelName` | string | — | Explicit channel name, no date suffix, honored with or without `staticChannel` — see above |
@@ -246,7 +253,7 @@ The extension loads silently on Pi startup — no channel is created until you e
 
 - **`/pi-discord-remote start`** — bot logs in, creates a text channel named `<project>-<mon><dd>-<HHMM>`, and starts listening there only
 - **Incoming message** — injected as a user prompt into the active Pi session; bot reacts ⏳ while Pi works, then posts the completed response back. Each assistant reply is appended as its own message, in transcript order, when it completes (no live editing)
-- **Tool calls** — each tool invocation is labeled (🔧 bash, 📄 read, ✏️ edit, etc.) with a detail line; if `toolResponses` is on, results follow as ↩️/❌ code blocks
+- **Tool calls** — each invocation posts a short summary with an emoji and a path when relevant (🔧 running a command, 📄 reading a file, 📝 writing to a file); commands, search patterns, and tool results are not mirrored
 - **`/pi-discord-remote stop`** (or Pi exit) — channel is deleted, bot disconnects
 
 ### Optional image skill tool

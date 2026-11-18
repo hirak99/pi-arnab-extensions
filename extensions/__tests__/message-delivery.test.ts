@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const discord = vi.hoisted(() => {
   const sent: string[] = [];
@@ -10,6 +10,7 @@ const discord = vi.hoisted(() => {
       sent.push(text);
       return { id: `message-${sent.length}` };
     }),
+    sendTyping: vi.fn(async () => {}),
   };
   return { sent, channel };
 });
@@ -110,6 +111,10 @@ describe("append-only transcript delivery", () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("posts A, steering B, and C independently in transcript order", async () => {
     const harness = createHarness();
     await harness.start();
@@ -144,6 +149,45 @@ describe("append-only transcript delivery", () => {
 
     await harness.emit("message_end", textMessage("assistant", "Completed text"));
     expect(discord.sent).toEqual(["Completed text"]);
+  });
+
+  it("mirrors Working with refreshed Discord typing until agent_end", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    await harness.start();
+    await harness.emit("agent_start");
+    expect(discord.channel.sendTyping).not.toHaveBeenCalled();
+
+    await harness.emit("turn_start");
+    await harness.emit("turn_start");
+    expect(discord.channel.sendTyping).toHaveBeenCalledTimes(1);
+
+    await harness.emit("message_end", textMessage("assistant", "A completed reply"));
+    expect(discord.channel.sendTyping).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(discord.channel.sendTyping).toHaveBeenCalledTimes(3);
+
+    await harness.emit("agent_end");
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(discord.channel.sendTyping).toHaveBeenCalledTimes(3);
+  });
+
+  it("posts tool-start summaries but never tool results", async () => {
+    const harness = createHarness();
+    await harness.start();
+    await harness.emit("agent_start");
+
+    await harness.emit("tool_execution_start", {
+      toolName: "write",
+      args: { path: "/tmp/example.txt" },
+    });
+    await harness.emit("tool_result", {
+      toolName: "write",
+      content: [{ type: "text", text: "sensitive tool result" }],
+    });
+
+    expect(discord.sent).toEqual(["📝 writing to `/tmp/example.txt`"]);
   });
 
   it("skips empty assistant messages and their completion footer", async () => {

@@ -29,7 +29,6 @@ describe("defaultConfigTemplate", () => {
     expect(parsed).toHaveProperty("categoryId");
     expect(parsed).toHaveProperty("allowedUserIds");
     expect(parsed).toHaveProperty("reactions");
-    expect(parsed).toHaveProperty("toolResponses");
   });
 
   it("has sensible defaults", async () => {
@@ -38,7 +37,6 @@ describe("defaultConfigTemplate", () => {
     expect(parsed.token).toBe("");
     expect(parsed.guildId).toBe("");
     expect(parsed.reactions).toBe(true);
-    expect(parsed.toolResponses).toBe(false);
     expect(parsed.allowedUserIds).toEqual([]);
   });
 
@@ -67,7 +65,6 @@ describe("saveConfig + loadConfig", () => {
       categoryId: "cat-789",
       allowedUserIds: ["user1", "user2"],
       reactions: false,
-      toolResponses: true,
     };
 
     await saveConfig(cfg);
@@ -80,7 +77,6 @@ describe("saveConfig + loadConfig", () => {
     expect(parsed.categoryId).toBe("cat-789");
     expect(parsed.allowedUserIds).toEqual(["user1", "user2"]);
     expect(parsed.reactions).toBe(false);
-    expect(parsed.toolResponses).toBe(true);
   });
 
   it("loadConfig returns null when no config file and no env vars", async () => {
@@ -120,7 +116,6 @@ describe("saveConfig + loadConfig", () => {
       expect(result!.guildId).toBe("env-guild");
       expect(result!.categoryId).toBe("env-category");
       expect(result!.reactions).toBe(true);
-      expect(result!.toolResponses).toBe(false);
     } finally {
       if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
       else delete process.env.DISCORD_TOKEN;
@@ -165,7 +160,6 @@ describe("saveConfig + loadConfig", () => {
         guildId: "round-trip-guild",
         allowedUserIds: ["a", "b"],
         reactions: false,
-        toolResponses: true,
       });
 
       const result = await loadConfig();
@@ -174,7 +168,6 @@ describe("saveConfig + loadConfig", () => {
       expect(result!.guildId).toBe("round-trip-guild");
       expect(result!.allowedUserIds).toEqual(["a", "b"]);
       expect(result!.reactions).toBe(false);
-      expect(result!.toolResponses).toBe(true);
     } finally {
       if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
     }

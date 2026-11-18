@@ -28,8 +28,6 @@ export interface Config {
   allowedUserIds?: string[];
   /** React with emoji while processing (default: true) */
   reactions?: boolean;
-  /** Also send tool responses (output/results) after each tool call (default: false) */
-  toolResponses?: boolean;
   /** Optional display-name overrides keyed by Discord user ID, e.g. { "123…": "Arnab" }.
    * Matched first, before nickname / global name / username fallbacks.
    * A null value marks the default user: their messages are injected with no
@@ -107,7 +105,6 @@ export async function loadConfig(): Promise<Config | null> {
         guildId: process.env.DISCORD_GUILD_ID,
         categoryId: process.env.DISCORD_CATEGORY_ID,
         reactions: true,
-        toolResponses: false,
       };
     }
     return null;
@@ -152,8 +149,6 @@ export function defaultConfigTemplate(): string {
         categoryId: "",
         allowedUserIds: [],
         reactions: true,
-        // Set to true to also post tool outputs/results after each tool call
-        toolResponses: false,
       },
       null,
       2,

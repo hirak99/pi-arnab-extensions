@@ -78,6 +78,9 @@ export default function (pi: ExtensionAPI) {
   let postedThinkingNotice = false;
   let postedAssistantReply = false;
   let lastImageArtifactPath: string | null = null;
+  let discordTypingActive = false;
+  let discordTypingTimer: ReturnType<typeof setTimeout> | null = null;
+  const DISCORD_TYPING_REFRESH_MS = 8_000;
   // Raw texts of prompts we injected from Discord, awaiting their message_end.
   // Used to keep echo from bouncing Discord-originated messages back to Discord.
   const injectedQueue: string[] = [];
@@ -197,6 +200,46 @@ export default function (pi: ExtensionAPI) {
     return pendingReplyChannelId ?? (activeConfig?.echo ? runtime.activeChannelId : null);
   }
 
+  function stopDiscordTyping(): void {
+    discordTypingActive = false;
+    if (discordTypingTimer) {
+      clearTimeout(discordTypingTimer);
+      discordTypingTimer = null;
+    }
+  }
+
+  async function sendDiscordTyping(): Promise<void> {
+    const channelId = mirrorTargetChannelId();
+    if (!client || !channelId) return;
+    try {
+      const channel = (await client.channels.fetch(channelId)) as TextChannel | null;
+      if (channel?.isTextBased()) await channel.sendTyping();
+    } catch (err) {
+      console.error("[pi-discord-remote] Failed to send typing indicator:", err);
+    }
+  }
+
+  function scheduleDiscordTypingRefresh(): void {
+    if (!discordTypingActive || discordTypingTimer) return;
+    discordTypingTimer = setTimeout(() => {
+      discordTypingTimer = null;
+      if (!discordTypingActive) return;
+      void sendDiscordTyping().finally(scheduleDiscordTypingRefresh);
+    }, DISCORD_TYPING_REFRESH_MS);
+    discordTypingTimer.unref();
+  }
+
+  // Pi's built-in Working indicator appears at turn_start and disappears at
+  // agent_end. Discord typing expires after roughly ten seconds, so refresh it
+  // while that same lifecycle is active. There is no Discord API to retract an
+  // already-sent typing indicator immediately.
+  async function startDiscordTyping(): Promise<void> {
+    if (discordTypingActive || !client || !mirrorTargetChannelId()) return;
+    discordTypingActive = true;
+    await sendDiscordTyping();
+    scheduleDiscordTypingRefresh();
+  }
+
   async function sendToActiveChannel(text: string): Promise<void> {
     const channelId = mirrorTargetChannelId();
     if (!client || !channelId) return;
@@ -204,6 +247,7 @@ export default function (pi: ExtensionAPI) {
       const channel = (await client.channels.fetch(channelId)) as TextChannel | null;
       if (!channel?.isTextBased()) return;
       await (channel as TextChannel).send(text);
+      if (discordTypingActive) await sendDiscordTyping();
     } catch (err) {
       console.error("[pi-discord-remote] Failed to send message:", err);
     }
@@ -385,9 +429,16 @@ export default function (pi: ExtensionAPI) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("agent_start", async (_event: any) => {
     agentBusy = true;
+    stopDiscordTyping();
     postedThinkingNotice = false;
     postedAssistantReply = false;
     lastImageArtifactPath = null;
+  });
+
+  // This is the same event that displays Pi's built-in ⠏ Working indicator.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pi.on("turn_start", async (_event: any) => {
+    await startDiscordTyping();
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -404,30 +455,6 @@ export default function (pi: ExtensionAPI) {
           }
         }
       }
-    }
-
-    if (!pendingReplyChannelId) {
-      return;
-    }
-
-    // Only send text summaries if toolResponses is enabled
-    if (!activeConfig?.toolResponses) return;
-
-    // Build a label like "↩️ bash: ..." or "↩️ read: ..."
-    const emoji = event.isError ? "❌" : "↩️";
-    const detailLabel = event.content
-      ?.filter((c: any) => c.type === "text")
-      .map((c: any) => String(c.text ?? "").trim())
-      .join("")
-      .slice(0, 300) ?? "";
-
-    // Send a compact summary line for each tool result
-    const label = `${emoji} _${event.toolName}_`;
-    if (detailLabel) {
-      const truncated = detailLabel.length > 400 ? detailLabel.slice(0, 400) + "…" : detailLabel;
-      await sendToActiveChannel(`${label}:\n\`\`\`\n${truncated}\n\`\`\``);
-    } else {
-      await sendToActiveChannel(label);
     }
   });
 
@@ -447,7 +474,7 @@ export default function (pi: ExtensionAPI) {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("tool_execution_start", async (event: any) => {
-    if (!pendingReplyChannelId) return;
+    if (!mirrorTargetChannelId()) return;
     // discord_ask_user_question is handled by our tool (formatted output)
     if (event.toolName === "discord_ask_user_question") return;
     await sendToActiveChannel(toolLabel(event.toolName, event.args));
@@ -510,6 +537,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", async (_event: any) => {
     // agentBusy stays true here — steering or follow-up work can start another
     // run right after agent_end. It is released by agent_settled.
+    stopDiscordTyping();
     const targetChannelId = mirrorTargetChannelId();
     if (!targetChannelId || !client) {
       pendingReplyChannelId = null;
@@ -673,6 +701,7 @@ export default function (pi: ExtensionAPI) {
       setStatus("pi-discord-remote", "⚠️ Discord: error");
     });
     client.on("shardDisconnect", () => {
+      stopDiscordTyping();
       if (isShuttingDown) return;
       console.error("[pi-discord-remote] Discord WebSocket disconnected during reconnect, retrying…");
       setStatus("pi-discord-remote", "🔄 Discord: reconnecting…");
@@ -782,6 +811,7 @@ export default function (pi: ExtensionAPI) {
   // ── Session cleanup ───────────────────────────────────────────────────────
 
   pi.on("session_shutdown", async (event: any) => {
+    stopDiscordTyping();
     // Reject any pending question so tool execution doesn't hang
     if (questionRejecter) {
       questionRejecter(new Error("Session shut down"));
@@ -851,6 +881,7 @@ export default function (pi: ExtensionAPI) {
     });
 
     client.on("shardDisconnect", () => {
+      stopDiscordTyping();
       if (isShuttingDown) return;
       console.error("[pi-discord-remote] Discord WebSocket disconnected, starting reconnect…");
       setStatusFn("pi-discord-remote", "🔄 Discord: reconnecting…");
@@ -984,6 +1015,7 @@ export default function (pi: ExtensionAPI) {
       await readyPromise;
     } catch (err: any) {
       // Initial login failure — clean up and notify immediately
+      stopDiscordTyping();
       console.error("[pi-discord-remote] Initial login failed:", err.message);
       await client.destroy().catch(() => {});
       client = null;
@@ -1371,19 +1403,12 @@ export default function (pi: ExtensionAPI) {
             ? allowedRaw.split(",").map((s: string) => s.trim()).filter(Boolean)
             : undefined;
 
-          const toolResponsesRaw = await ctx.ui.input(
-            "Send tool responses to Discord? (yes/no, default: no):",
-            existing?.toolResponses ? "yes" : "no",
-          );
-          const toolResponses = toolResponsesRaw?.trim().toLowerCase() === "yes";
-
           const cfg: Config = {
             token,
             guildId,
             ...(categoryId ? { categoryId } : {}),
             ...(allowedUserIds ? { allowedUserIds } : {}),
             reactions: true,
-            toolResponses,
           };
 
           await saveConfig(cfg);
@@ -1412,6 +1437,7 @@ export default function (pi: ExtensionAPI) {
 
         // ── stop ──────────────────────────────────────────────────────────
         case "stop": {
+          stopDiscordTyping();
           if (!client) {
             ctx.ui.notify("Not connected.", "warning");
             return;

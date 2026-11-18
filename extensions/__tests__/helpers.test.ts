@@ -155,43 +155,32 @@ describe("toolLabel", () => {
     expect(toolLabel("custom_tool", {})).toContain("⚙️");
   });
 
-  it("shows command for bash", () => {
-    const label = toolLabel("bash", { command: "npm test" });
-    expect(label).toContain("`npm test`");
+  it("summarizes bash without exposing the command", () => {
+    const label = toolLabel("bash", { command: "echo sensitive-input" });
+    expect(label).toBe("🔧 running a command");
+    expect(label).not.toContain("sensitive-input");
   });
 
-  it("truncates long bash commands", () => {
-    const longCmd = "x".repeat(200);
-    const label = toolLabel("bash", { command: longCmd });
-    expect(label).toContain("…");
-    expect(label).not.toContain(longCmd);
+  it("shows paths for read/write/edit", () => {
+    expect(toolLabel("read", { path: "/src/index.ts" })).toBe("📄 reading `/src/index.ts`");
+    expect(toolLabel("write", { path: "/out.txt" })).toBe("📝 writing to `/out.txt`");
+    expect(toolLabel("edit", { path: "/edit.ts" })).toBe("✏️ editing `/edit.ts`");
   });
 
-  it("shows path for read/write/edit", () => {
-    expect(toolLabel("read", { path: "/src/index.ts" })).toContain("`/src/index.ts`");
-    expect(toolLabel("write", { path: "/out.txt" })).toContain("`/out.txt`");
-    expect(toolLabel("edit", { path: "/edit.ts" })).toContain("`/edit.ts`");
+  it("shows only the path for grep, not the search pattern", () => {
+    const label = toolLabel("grep", { pattern: "sensitive-pattern", path: "/src" });
+    expect(label).toBe("🔍 searching in `/src`");
+    expect(label).not.toContain("sensitive-pattern");
   });
 
-  it("shows pattern and path for grep", () => {
-    const label = toolLabel("grep", { pattern: "TODO", path: "/src" });
-    expect(label).toContain("`TODO`");
-    expect(label).toContain("`/src`");
-  });
-
-  it("shows path for find/ls", () => {
-    expect(toolLabel("find", { path: "/home" })).toContain("`/home`");
-  });
-
-  it("formats as italic tool name", () => {
-    const label = toolLabel("bash", { command: "echo hi" });
-    expect(label).toContain("_bash_");
+  it("shows paths for find and ls", () => {
+    expect(toolLabel("find", { path: "/workspace" })).toBe("🔎 finding files in `/workspace`");
+    expect(toolLabel("ls", { path: "/workspace" })).toBe("📁 listing `/workspace`");
   });
 
   it("handles null/undefined args gracefully", () => {
-    const label = toolLabel("bash", null);
-    expect(label).toContain("🔧");
-    expect(label).toContain("_bash_");
+    expect(toolLabel("bash", null)).toBe("🔧 running a command");
+    expect(toolLabel("write", undefined)).toBe("📝 writing to");
   });
 });
 

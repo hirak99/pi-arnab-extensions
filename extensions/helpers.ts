@@ -114,34 +114,30 @@ export function splitMessage(text: string, maxLen = 1900): string[] {
 }
 
 /**
- * Build a Discord-friendly label for a tool invocation.
+ * Build a short Discord-friendly summary for a tool invocation. Arguments are
+ * limited to paths; commands, search patterns, and tool output are never shown.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function toolLabel(toolName: string, args: any): string {
-  const emojis: Record<string, string> = {
-    bash: "🔧",
-    read: "📄",
-    edit: "✏️",
-    write: "📝",
-    grep: "🔍",
-    find: "🔎",
-    ls: "📁",
-  };
-  const emoji = emojis[toolName] ?? "⚙️";
-  let detail = "";
-  if (toolName === "bash" && args?.command) {
-    const cmd = String(args.command).replace(/\n/g, " ").slice(0, 80);
-    detail = `: \`${cmd}${args.command.length > 80 ? "…" : ""}\``;
-  } else if (["read", "write"].includes(toolName) && args?.path) {
-    detail = `: \`${args.path}\``;
-  } else if (toolName === "edit" && args?.path) {
-    detail = `: \`${args.path}\``;
-  } else if (toolName === "grep" && args?.pattern) {
-    detail = `: \`${args.pattern}\`${args.path ? ` in \`${args.path}\`` : ""}`;
-  } else if (["find", "ls"].includes(toolName) && args?.path) {
-    detail = `: \`${args.path}\``;
+  const path = typeof args?.path === "string" && args.path.trim() ? ` \`${args.path}\`` : "";
+  switch (toolName) {
+    case "bash":
+      return "🔧 running a command";
+    case "read":
+      return `📄 reading${path}`;
+    case "edit":
+      return `✏️ editing${path}`;
+    case "write":
+      return `📝 writing to${path}`;
+    case "grep":
+      return `🔍 searching${path ? ` in${path}` : ""}`;
+    case "find":
+      return `🔎 finding files${path ? ` in${path}` : ""}`;
+    case "ls":
+      return `📁 listing${path}`;
+    default:
+      return `⚙️ calling _${toolName}_`;
   }
-  return `${emoji} _${toolName}_${detail}`;
 }
 
 export function isAbortLikeError(err: unknown): boolean {

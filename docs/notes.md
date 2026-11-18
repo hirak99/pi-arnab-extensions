@@ -99,6 +99,9 @@ ever moves. Commit early; push when you want the work backed up remotely.
 Assistant output is append-only: each completed assistant message is posted
 at `message_end`, in transcript order. `agent_end` adds only the completion
 mention/divider footer, so steering messages cannot merge adjacent replies.
+Tool-call starts are posted as short emoji/path summaries; commands, search
+patterns, and tool results are never mirrored. Discord typing follows Pi's
+`Working` lifecycle (`turn_start` to `agent_end`) with an 8-second refresh.
 
 See the README's "Fork additions" section for full descriptions.
 
