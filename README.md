@@ -109,18 +109,28 @@ When `agent_settled` reports `aborted: true`, the persistent session channel
 receives `🛑 Agent interrupted`. Abortion can come from a human, an extension,
 or session shutdown, so the notice deliberately does not claim a human cause.
 
-### Subagent activity
+### Subagent and background-job activity
 
-When `pi-subagents` is installed, top-level subagent activity is reported in
-the persistent session channel:
+When `pi-subagents` and/or `pi-background-tasks` is installed, their activity
+is reported in the persistent session channel:
 
-- starts update internal state without posting an immediate message
-- every `agent_end` posts all currently running subagents below the turn
-  divider: 🆕 for the first snapshot and ⏳ for previously reported agents
-- completions and failures always post immediately as ✅/❌ messages, including
-  short-lived agents and agents that finish while Pi is idle
-- reports use the trimmed task description (up to 80 characters), falling back
-  to the agent type; completion messages are serialized to preserve order
+- subagent starts update internal state without posting an immediate message;
+  running background jobs are fetched on demand through the plugin's EventBus
+  status API
+- every `agent_end` posts one combined snapshot below the turn divider, with a
+  🤖 subagent section and/or an ⚙️ background-job section: 🆕 marks an activity's
+  first snapshot and ⏳ marks activities reported by an earlier snapshot
+- subagent completions/failures and background-job terminal events always post
+  immediately, including short-lived activities and activities that finish
+  while Pi is idle; completed jobs use ✅, failed jobs ❌, and killed jobs 🛑
+- reports use trimmed names/descriptions (up to 80 characters), with type/ID
+  fallbacks; immediate completion messages and running snapshots share one
+  serialized delivery queue to preserve order
+- duplicate background terminal events are ignored by task ID
+
+Both plugins are optional and accessed only through `pi.events`. If either is
+absent, its section is silently omitted; if neither has running activity, no
+snapshot is posted and all other Discord features continue unchanged.
 
 ### Auto-start (per-project opt-in)
 

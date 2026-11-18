@@ -30,6 +30,7 @@ import {
 } from "discord.js";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 
 import {
@@ -107,12 +108,9 @@ export default function (pi: ExtensionAPI) {
   let questionAbortListener: (() => void) | null = null;
   let questionAbortSignal: AbortSignal | null = null;
 
-  // ── Subagent activity tracking (pi-subagents, optional) ──────────────
-  // Discovered over the shared pi.events bus: pi-subagents broadcasts
-  // `subagents:ready` on session start. If the plugin is not installed — or
-  // excluded from this session — no events ever arrive and this feature
-  // silently stays inert. Lifecycle events cover top-level agents only;
-  // nested/workflow-owned children report through their parent.
+  // ── Optional activity tracking (pi-subagents, pi-background-tasks) ───
+  // Both integrations use only the shared pi.events bus. Missing plugins
+  // therefore leave these features inert without imports or startup errors.
   let subagentsAvailable = false;
   interface RunningSubagent {
     type?: string;
@@ -120,18 +118,52 @@ export default function (pi: ExtensionAPI) {
     reported: boolean;
   }
   const runningSubagents = new Map<string, RunningSubagent>();
-  let subagentReportQueue: Promise<void> = Promise.resolve();
+
+  const BG_REQUEST_CHANNEL = "pi-background-tasks:request:v1";
+  const BG_RESPONSE_CHANNEL = "pi-background-tasks:response:v1";
+  const BG_TERMINAL_CHANNEL = "pi-background-tasks:terminal:v1";
+  const BG_REQUEST_SCHEMA = "pi-background-tasks.extension-request.v1";
+  const BG_RESPONSE_SCHEMA = "pi-background-tasks.extension-response.v1";
+  const BG_TERMINAL_SCHEMA = "pi-background-tasks.extension-terminal.v1";
+
+  interface BackgroundTask {
+    id: string;
+    name?: string;
+    description?: string;
+    status?: string;
+  }
+  interface RunningBackgroundTask {
+    id: string;
+    name?: string;
+    description?: string;
+    reported: boolean;
+  }
+  const runningBackgroundTasks = new Map<string, RunningBackgroundTask>();
+  const settledBackgroundTaskIds = new Set<string>();
+  const pendingBackgroundStatusRequests = new Map<
+    string,
+    (tasks: BackgroundTask[] | undefined) => void
+  >();
+  let activityReportQueue: Promise<void> = Promise.resolve();
+
+  function activityLabel(value: string | undefined, fallback: string): string {
+    const label = value?.trim() || fallback;
+    return label.length > 80 ? label.slice(0, 80) + "…" : label;
+  }
 
   // Display name for a subagent: its short task description wins, falling
   // back to the agent type, then to a generic label.
   function subagentLabel(meta: RunningSubagent | undefined): string {
-    const desc = meta?.description?.trim();
-    if (desc) return desc.length > 80 ? desc.slice(0, 80) + "…" : desc;
-    return meta?.type?.trim() || "subagent";
+    return activityLabel(meta?.description, meta?.type?.trim() || "subagent");
   }
-  const subagentUnsubs: Array<() => void> = [];
 
-  subagentUnsubs.push(
+  function backgroundTaskLabel(meta: BackgroundTask | RunningBackgroundTask): string {
+    return activityLabel(meta.name?.trim() || meta.description, meta.id || "Background task");
+  }
+
+  const activityUnsubs: Array<() => void> = [];
+
+  activityUnsubs.push(
     pi.events.on("subagents:ready", () => {
       subagentsAvailable = true;
     }),
@@ -156,11 +188,30 @@ export default function (pi: ExtensionAPI) {
       subagentsAvailable = false;
       runningSubagents.clear();
     }),
+    pi.events.on(BG_RESPONSE_CHANNEL, (event: any) => {
+      if (event?.schema_version !== BG_RESPONSE_SCHEMA || event?.operation !== "status") return;
+      const settle = pendingBackgroundStatusRequests.get(event?.request_id);
+      if (!settle) return;
+      if (!event?.ok) {
+        settle(undefined);
+        return;
+      }
+      const tasks = event?.result?.tasks;
+      if (!Array.isArray(tasks)) return;
+      settle(
+        tasks.filter(
+          (task: any): task is BackgroundTask => typeof task?.id === "string" && task.id.length > 0,
+        ),
+      );
+    }),
+    pi.events.on(BG_TERMINAL_CHANNEL, (event: any) => {
+      return onBackgroundTaskSettled(event);
+    }),
   );
 
-  function queueSubagentReport(text: string): Promise<void> {
-    const report = subagentReportQueue.then(() => sendSubagentStatus(text));
-    subagentReportQueue = report;
+  function queueActivityReport(text: string): Promise<void> {
+    const report = activityReportQueue.then(() => sendActivityStatus(text));
+    activityReportQueue = report;
     return report;
   }
 
@@ -172,7 +223,73 @@ export default function (pi: ExtensionAPI) {
     runningSubagents.delete(event.id);
     // Always announce completion, including agents that started and finished
     // within one turn and agents that finish after Pi has become idle.
-    return queueSubagentReport(`${succeeded ? "✅ Finished" : "❌ Failed"}: ${subagentLabel(meta)}`);
+    return queueActivityReport(`${succeeded ? "✅ Finished" : "❌ Failed"}: ${subagentLabel(meta)}`);
+  }
+
+  // A status response from pi-background-tasks is produced in a microtask.
+  // The fallback therefore gives an installed plugin a chance to answer while
+  // resolving immediately enough to stay invisible when no plugin is present.
+  function queryBackgroundTasks(): Promise<BackgroundTask[] | undefined> {
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (tasks: BackgroundTask[] | undefined): void => {
+        if (settled) return;
+        settled = true;
+        pendingBackgroundStatusRequests.delete(requestId);
+        resolve(tasks);
+      };
+      pendingBackgroundStatusRequests.set(requestId, settle);
+      try {
+        pi.events.emit(BG_REQUEST_CHANNEL, {
+          schema_version: BG_REQUEST_SCHEMA,
+          request_id: requestId,
+          operation: "status",
+          payload: {},
+        });
+      } catch {
+        settle(undefined);
+        return;
+      }
+      queueMicrotask(() => settle(undefined));
+    });
+  }
+
+  async function refreshRunningBackgroundTasks(): Promise<void> {
+    const tasks = await queryBackgroundTasks();
+    // An absent plugin or malformed/error response must not erase the last
+    // known snapshot. A successful empty response does clear it.
+    if (!tasks) return;
+    const next = new Map<string, RunningBackgroundTask>();
+    for (const task of tasks) {
+      if (task.status !== "running" || settledBackgroundTaskIds.has(task.id)) continue;
+      const previous = runningBackgroundTasks.get(task.id);
+      next.set(task.id, {
+        id: task.id,
+        name: task.name,
+        description: task.description,
+        reported: previous?.reported ?? false,
+      });
+    }
+    runningBackgroundTasks.clear();
+    for (const [id, task] of next) runningBackgroundTasks.set(id, task);
+  }
+
+  function onBackgroundTaskSettled(event: any): Promise<void> | undefined {
+    if (event?.schema_version !== BG_TERMINAL_SCHEMA) return;
+    const task = event?.task as BackgroundTask | undefined;
+    if (!task?.id || settledBackgroundTaskIds.has(task.id)) return;
+    let prefix: string;
+    if (task.status === "completed") prefix = "✅ Finished";
+    else if (task.status === "failed") prefix = "❌ Failed";
+    else if (task.status === "killed") prefix = "🛑 Stopped";
+    else return;
+
+    settledBackgroundTaskIds.add(task.id);
+    runningBackgroundTasks.delete(task.id);
+    // Terminal snapshots carry their own metadata, so even short-lived jobs
+    // that never appeared in a running snapshot get immediate feedback.
+    return queueActivityReport(`${prefix}: ${backgroundTaskLabel(task)}`);
   }
 
   function clearQuestionState(): void {
@@ -253,26 +370,39 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // Subagent updates belong to the persistent session channel, including
+  // Activity updates belong to the persistent session channel, including
   // completions that arrive after the originating turn's reply state is cleared.
-  async function sendSubagentStatus(text: string): Promise<void> {
+  async function sendActivityStatus(text: string): Promise<void> {
     await sendToActiveChannel(text, runtime.activeChannelId ?? mirrorTargetChannelId() ?? undefined);
   }
 
-  // Snapshot all running agents at each agent_end. New entries are marked only
-  // in the first snapshot; subsequent snapshots show them as still running.
-  async function postRunningSubagents(): Promise<void> {
-    if (!subagentsAvailable || runningSubagents.size === 0) return;
-    const entries = [...runningSubagents.values()];
-    const n = entries.length;
-    const lines = entries.map((meta) => {
-      const marker = meta.reported ? "⏳" : "🆕";
-      meta.reported = true;
-      return `${marker} ${subagentLabel(meta)}`;
-    });
-    const text = `🤖 ${n} subagent${n === 1 ? "" : "s"} working…\n${lines.join("\n")}`;
-    for (const chunk of splitMessage(text)) {
-      await queueSubagentReport(chunk);
+  // Snapshot all running activity at each agent_end. New entries are marked
+  // only in their first snapshot; subsequent snapshots show them as running.
+  async function postRunningActivity(): Promise<void> {
+    const sections: string[] = [];
+    if (subagentsAvailable && runningSubagents.size > 0) {
+      const entries = [...runningSubagents.values()];
+      const n = entries.length;
+      const lines = entries.map((meta) => {
+        const marker = meta.reported ? "⏳" : "🆕";
+        meta.reported = true;
+        return `${marker} ${subagentLabel(meta)}`;
+      });
+      sections.push(`🤖 ${n} subagent${n === 1 ? "" : "s"} working…\n${lines.join("\n")}`);
+    }
+    if (runningBackgroundTasks.size > 0) {
+      const entries = [...runningBackgroundTasks.values()];
+      const n = entries.length;
+      const lines = entries.map((meta) => {
+        const marker = meta.reported ? "⏳" : "🆕";
+        meta.reported = true;
+        return `${marker} ${backgroundTaskLabel(meta)}`;
+      });
+      sections.push(`⚙️ ${n} background job${n === 1 ? "" : "s"} running…\n${lines.join("\n")}`);
+    }
+    if (sections.length === 0) return;
+    for (const chunk of splitMessage(sections.join("\n\n"))) {
+      await queueActivityReport(chunk);
     }
   }
 
@@ -552,15 +682,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // Refresh on demand rather than polling: the optional background-task
+    // plugin returns every retained task, and we keep only running jobs.
+    await refreshRunningBackgroundTasks();
+
     // Replies have already been posted at message_end. Keep the completion
     // mention and visual boundary as run-level metadata, not a reply buffer.
     const hasRunningSubagents = subagentsAvailable && runningSubagents.size > 0;
-    if (postedAssistantReply || hasRunningSubagents) {
+    const hasRunningBackgroundTasks = runningBackgroundTasks.size > 0;
+    if (postedAssistantReply || hasRunningSubagents || hasRunningBackgroundTasks) {
       const mention = pendingReplyUserId ? `<@${pendingReplyUserId}> ` : "";
       await sendToActiveChannel(mention + TURN_DIVIDER);
       postedAssistantReply = false;
     }
-    await postRunningSubagents();
+    await postRunningActivity();
     pendingReplyChannelId = null;
     pendingReplyUserId = null;
   });
@@ -832,7 +967,8 @@ export default function (pi: ExtensionAPI) {
     clearQuestionState();
     // Drop pi.events bus subscriptions so a reloaded copy of this extension
     // doesn't accumulate stale handlers on the shared bus.
-    for (const unsub of subagentUnsubs.splice(0)) unsub();
+    for (const unsub of activityUnsubs.splice(0)) unsub();
+    for (const settle of [...pendingBackgroundStatusRequests.values()]) settle(undefined);
     clearReconnectTimer();
     isShuttingDown = true;
     // Don't destroy Discord client on reload — just re-register handlers

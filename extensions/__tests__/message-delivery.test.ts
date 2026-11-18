@@ -77,6 +77,9 @@ function createHarness() {
         busHandlers.set(name, handler);
         return () => busHandlers.delete(name);
       }),
+      emit: vi.fn((name: string, event: any) => {
+        busHandlers.get(name)?.(event);
+      }),
     },
     on: vi.fn((name: string, handler: EventHandler) => {
       handlers.set(name, handler);
@@ -108,6 +111,47 @@ function createHarness() {
       if (!handler) throw new Error(`No bus handler registered for ${name}`);
       await handler(event);
     },
+    onBus(name: string, handler: (event: any) => unknown) {
+      busHandlers.set(name, handler);
+    },
+  };
+}
+
+const BG_REQUEST = "pi-background-tasks:request:v1";
+const BG_RESPONSE = "pi-background-tasks:response:v1";
+const BG_TERMINAL = "pi-background-tasks:terminal:v1";
+
+function installBackgroundTaskPlugin(
+  harness: ReturnType<typeof createHarness>,
+  tasks: Array<{ id: string; name?: string; description?: string; status: string }>,
+) {
+  const requests: any[] = [];
+  harness.onBus(BG_REQUEST, (request) => {
+    requests.push(request);
+    if (request?.operation !== "status") return;
+    // The real EventBus service answers asynchronously from its status handler.
+    queueMicrotask(() => {
+      void harness.emitBus(BG_RESPONSE, {
+        schema_version: "pi-background-tasks.extension-response.v1",
+        request_id: request.request_id,
+        operation: "status",
+        ok: true,
+        result: { tasks },
+      });
+    });
+  });
+  return requests;
+}
+
+function terminalBackgroundTask(task: {
+  id: string;
+  name?: string;
+  description?: string;
+  status: "completed" | "failed" | "killed";
+}) {
+  return {
+    schema_version: "pi-background-tasks.extension-terminal.v1",
+    task,
   };
 }
 
@@ -241,17 +285,18 @@ describe("append-only transcript delivery", () => {
     ]);
   });
 
-  it("marks new and previously reported subagents in every running snapshot", async () => {
+  it("marks new and previously reported subagents and background jobs in combined snapshots", async () => {
     const harness = createHarness();
     await harness.start();
+    const requests = installBackgroundTaskPlugin(harness, [
+      { id: "job-a", name: "Test suite", status: "running" },
+      { id: "job-b", name: "Documentation server", status: "running" },
+      { id: "job-c", name: "Old completed job", status: "completed" },
+    ]);
     await harness.emitBus("subagents:ready");
     await harness.emitBus("subagents:started", {
       id: "agent-a",
-      description: "Research API",
-    });
-    await harness.emitBus("subagents:started", {
-      id: "agent-b",
-      description: "Inspect parser",
+      description: "Inspect authentication flow",
     });
 
     await harness.emit("agent_start");
@@ -261,13 +306,82 @@ describe("append-only transcript delivery", () => {
 
     expect(discord.sent).toEqual([
       DIVIDER,
-      "🤖 2 subagents working…\n🆕 Research API\n🆕 Inspect parser",
+      "🤖 1 subagent working…\n🆕 Inspect authentication flow\n\n" +
+        "⚙️ 2 background jobs running…\n🆕 Test suite\n🆕 Documentation server",
       DIVIDER,
-      "🤖 2 subagents working…\n⏳ Research API\n⏳ Inspect parser",
+      "🤖 1 subagent working…\n⏳ Inspect authentication flow\n\n" +
+        "⚙️ 2 background jobs running…\n⏳ Test suite\n⏳ Documentation server",
+    ]);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({
+      schema_version: "pi-background-tasks.extension-request.v1",
+      operation: "status",
+      payload: {},
+    });
+    expect(requests[0].request_id).not.toBe(requests[1].request_id);
+  });
+
+  it("keeps subagent snapshots working when the background plugin is absent", async () => {
+    const harness = createHarness();
+    await harness.start();
+    await harness.emitBus("subagents:ready");
+    await harness.emitBus("subagents:started", {
+      id: "agent-a",
+      description: "Research API",
+    });
+
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+
+    expect(discord.sent).toEqual([
+      DIVIDER,
+      "🤖 1 subagent working…\n🆕 Research API",
     ]);
   });
 
-  it("serializes immediate subagent completion messages", async () => {
+  it("posts nothing for an empty background-task and subagent snapshot", async () => {
+    const harness = createHarness();
+    await harness.start();
+    installBackgroundTaskPlugin(harness, [
+      { id: "job-a", name: "Completed job", status: "completed" },
+    ]);
+
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+
+    expect(discord.sent).toEqual([]);
+  });
+
+  it("reports background completions immediately without echo and deduplicates terminal events", async () => {
+    discord.echo = false;
+    const harness = createHarness();
+    await harness.start();
+
+    await harness.emitBus(
+      BG_TERMINAL,
+      terminalBackgroundTask({ id: "job-a", name: "Ten second sleep", status: "completed" }),
+    );
+    await harness.emitBus(
+      BG_TERMINAL,
+      terminalBackgroundTask({ id: "job-a", name: "Ten second sleep", status: "completed" }),
+    );
+    await harness.emitBus(
+      BG_TERMINAL,
+      terminalBackgroundTask({ id: "job-b", name: "Test suite", status: "failed" }),
+    );
+    await harness.emitBus(
+      BG_TERMINAL,
+      terminalBackgroundTask({ id: "job-c", name: "Dev server", status: "killed" }),
+    );
+
+    expect(discord.sent).toEqual([
+      "✅ Finished: Ten second sleep",
+      "❌ Failed: Test suite",
+      "🛑 Stopped: Dev server",
+    ]);
+  });
+
+  it("serializes immediate subagent and background-task completion messages", async () => {
     const pendingSends: Array<() => void> = [];
     discord.channel.send.mockImplementation(
       (text: string) =>
@@ -286,13 +400,22 @@ describe("append-only transcript delivery", () => {
 
     const first = harness.emitBus("subagents:completed", { id: "agent-a" });
     const second = harness.emitBus("subagents:completed", { id: "agent-b" });
-    await vi.waitFor(() => expect(pendingSends).toHaveLength(1));
-    pendingSends.shift()!();
-    await vi.waitFor(() => expect(pendingSends).toHaveLength(1));
-    pendingSends.shift()!();
-    await Promise.all([first, second]);
+    const third = harness.emitBus(
+      BG_TERMINAL,
+      terminalBackgroundTask({ id: "job-a", name: "Third task", status: "completed" }),
+    );
+    for (const expected of ["First task", "Second task", "Third task"]) {
+      await vi.waitFor(() => expect(pendingSends).toHaveLength(1));
+      pendingSends.shift()!();
+      await vi.waitFor(() => expect(discord.sent.some((text) => text.endsWith(expected))).toBe(true));
+    }
+    await Promise.all([first, second, third]);
 
-    expect(discord.sent).toEqual(["✅ Finished: First task", "✅ Finished: Second task"]);
+    expect(discord.sent).toEqual([
+      "✅ Finished: First task",
+      "✅ Finished: Second task",
+      "✅ Finished: Third task",
+    ]);
   });
 
   it("skips empty assistant messages and their completion footer", async () => {
