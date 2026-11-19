@@ -79,10 +79,11 @@ ever moves. Commit early; push when you want the work backed up remotely.
 
 ## Fork feature flags (all opt-in, default off)
 
-- `displayNames` — `[Name]:` attribution on Discord-originated prompts.
-  Value per user ID: string overrides the name, `null` marks the default
-  user (no prefix at all). No entry → server nickname → global name →
-  @username, with prefix.
+- `displayNames` — `[Name (<@userID>)]:` attribution on Discord-originated
+  prompts. Value per user ID: string overrides the friendly name, `null` marks
+  the default user (no prefix at all). No entry → server nickname → global
+  name → `<@userID>` alone when no friendly name is available. The token can
+  be reused in Discord replies to ping the author.
 - `echo: true` — terminal-typed turns are mirrored into the channel, with a
   divider marking the boundary before the agent's reply.
 - `steer: true` — Discord messages sent mid-turn are injected into the

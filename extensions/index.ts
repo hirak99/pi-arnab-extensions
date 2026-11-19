@@ -1029,18 +1029,24 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Attribute the prompt to its Discord author so the agent knows who is driving.
-      // displayNames wins: a string overrides the name, null marks the default
-      // user whose messages get no [Name]: prefix. Otherwise fall back to
-      // server nickname, global display name, and finally the @username handle.
+      // displayNames wins: a string overrides the friendly name, null marks the
+      // default user whose messages get no prefix. Otherwise fall back to server
+      // nickname, global display name, and finally the username. Include the
+      // <@userID> mention token unless it is already the sole attribution.
       const displayName = activeConfig?.displayNames?.[message.author.id];
-      const authorName =
+      const resolvedName =
+        displayName ??
+        message.member?.displayName ??
+        message.author.displayName ??
+        message.author.username;
+      const mention = `<@${message.author.id}>`;
+      const attribution =
         displayName === null
           ? null
-          : displayName ??
-            message.member?.displayName ??
-            message.author.displayName ??
-            message.author.username;
-      const injected = authorName === null ? message.content : `[${authorName}]: ${message.content}`;
+          : resolvedName === message.author.username
+            ? mention
+            : `${resolvedName} (${mention})`;
+      const injected = attribution === null ? message.content : `[${attribution}]: ${message.content}`;
 
       if (agentBusy) {
         if (activeConfig.steer) {

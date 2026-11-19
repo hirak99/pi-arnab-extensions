@@ -64,6 +64,7 @@ vi.mock("../config.js", () => ({
 }));
 
 import registerExtension from "../index.js";
+import { loadEffectiveConfig } from "../config.js";
 
 type EventHandler = (event: any, ctx?: any) => Promise<unknown>;
 
@@ -163,10 +164,63 @@ describe("Discord client reload handoff", () => {
     };
     const messageHandler = client.listeners("messageCreate")[0];
     await messageHandler(incoming);
-    expect(second.pi.sendUserMessage).toHaveBeenCalledWith("[tester]: after reload");
+    expect(second.pi.sendUserMessage).toHaveBeenCalledWith("[<@user-1>]: after reload");
     expect(first.pi.sendUserMessage).not.toHaveBeenCalled();
 
     await second.emit("session_shutdown", { reason: "quit" });
     expect(client.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("includes Discord mention tokens unless the user is configured with null", async () => {
+    vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({
+      token: "test-token",
+      guildId: "guild-1",
+      displayNames: {
+        "assigned-user": "Assigned Name",
+        "default-user": null,
+      },
+    });
+    const harness = createHarness();
+    await harness.start({ cwd: "/test-project", ui: makeUi() });
+    const client = discord.instances[discord.instances.length - 1];
+    const messageHandler = client.listeners("messageCreate")[0];
+
+    const send = async (
+      id: string,
+      username: string,
+      content: string,
+      names: { member?: string; global?: string } = {},
+    ) => {
+      await messageHandler({
+        author: { bot: false, id, username, displayName: names.global },
+        member: names.member === undefined ? null : { displayName: names.member },
+        channelId: "channel-1",
+        content,
+        react: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+      });
+    };
+
+    await send("assigned-user", "assigned_handle", "assigned", {
+      member: "Server Nickname",
+      global: "Global Name",
+    });
+    await send("nickname-user", "server_handle", "nickname", { member: "Server Nickname" });
+    await send("global-user", "global_handle", "global", { global: "Global Name" });
+    await send("username-user", "handle_only", "username");
+    await send("default-user", "default_handle", "no attribution", {
+      member: "Server Nickname",
+      global: "Global Name",
+    });
+
+    expect(harness.pi.sendUserMessage.mock.calls.map(([text]) => text)).toEqual([
+      "[Assigned Name (<@assigned-user>)]: assigned",
+      "[Server Nickname (<@nickname-user>)]: nickname",
+      "[Global Name (<@global-user>)]: global",
+      "[<@username-user>]: username",
+      "no attribution",
+    ]);
+
+    await harness.emit("session_shutdown", { reason: "quit" });
   });
 });

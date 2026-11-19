@@ -42,15 +42,17 @@ diagnosing failures, the fork dev loop — see [docs/notes.md](docs/notes.md).
 ### Message attribution
 
 Prompts received from Discord are attributed to their author, so the agent
-knows who is driving: messages arrive in Pi as `[Name]: <text>`. The name is
-resolved from the `displayNames` config map (keyed by user ID) first, then the
-server nickname, then the global display name, then the `@username`. A
+knows who is driving: messages arrive in Pi as `[Name (<@userID>)]: <text>`.
+The name is resolved from the `displayNames` config map (keyed by user ID)
+first, then the server nickname, then the global display name. If none is
+available, the format is `[<@userID>]: <text>` without duplication. Reusing
+the mention token in a Discord reply produces a real user ping. A
 `displayNames` value of `null` marks the **default user** — their messages
 are injected with no prefix at all.
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `displayNames` | object | `{}` | Display-name overrides keyed by Discord user ID. String wins over nickname / global name / username; `null` = default user, no prefix |
+| `displayNames` | object | `{}` | Friendly-name overrides keyed by Discord user ID, shown with the `<@userID>` mention token. String wins over nickname / global name / username; `null` = default user, no prefix |
 
 ### Echo (two-way mirror)
 
@@ -79,7 +81,7 @@ By default, a message sent from Discord while a turn is running gets a
 "⏳ please wait" reply and is **dropped**. With `"steer": true`, the message
 is instead injected into the running turn with pi's `deliverAs: "steer"` —
 the agent receives it at its next step, before its next LLM call, as
-`[Name]: <text>` — and the message gets a ⏩ reaction. Delivery is attributed
+`[Name (<@userID>)]: <text>` — and the message gets a ⏩ reaction. Delivery is attributed
 and deduped against echo exactly like idle-time messages.
 
 Steering takes effect between model calls, so a long-running tool call

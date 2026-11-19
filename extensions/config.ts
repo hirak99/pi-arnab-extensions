@@ -30,8 +30,8 @@ export interface Config {
   reactions?: boolean;
   /** Optional display-name overrides keyed by Discord user ID, e.g. { "123…": "Arnab" }.
    * Matched first, before nickname / global name / username fallbacks.
-   * A null value marks the default user: their messages are injected with no
-   * [Name]: prefix at all. */
+   * Friendly names are shown with the <@userID> mention token. A null value marks
+   * the default user: their messages are injected with no attribution prefix at all. */
   displayNames?: Record<string, string | null>;
   /** Mirror session activity that did NOT originate from Discord into the
    * channel: prompts typed in the pi terminal, their tool-call labels, and
