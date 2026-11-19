@@ -247,6 +247,84 @@ describe("append-only transcript delivery", () => {
     expect(discord.sent).toEqual(["🛑 Agent interrupted"]);
   });
 
+  describe("provider error surfacing", () => {
+    const errorMessage = (text = "500: server_error") => ({
+      message: { role: "assistant", content: [], stopReason: "error", errorMessage: text },
+    });
+
+    it("announces the first error once, then reports recovery", async () => {
+      discord.echo = false;
+      const harness = createHarness();
+      await harness.start();
+
+      await harness.emit("agent_start");
+      await harness.emit("message_end", errorMessage());
+      await harness.emit("agent_end");
+      await harness.emit("agent_start");
+      await harness.emit("message_end", errorMessage());
+      await harness.emit("agent_end");
+      await harness.emit("agent_start");
+      await harness.emit("message_end", textMessage("assistant", "Fine now"));
+      await harness.emit("agent_end");
+      await harness.emit("agent_settled", { aborted: false });
+
+      expect(discord.sent).toEqual([
+        "⚠️ Provider error (Pi may retry automatically):\n```\n500: server_error\n```",
+        "✅ Recovered after 2 provider errors.",
+      ]);
+    });
+
+    it("reports a final failure when the run settles on an error", async () => {
+      discord.echo = false;
+      const harness = createHarness();
+      await harness.start();
+
+      await harness.emit("agent_start");
+      await harness.emit("message_end", errorMessage("overloaded"));
+      await harness.emit("agent_end");
+      await harness.emit("agent_settled", { aborted: false });
+
+      expect(discord.sent).toEqual([
+        "⚠️ Provider error (Pi may retry automatically):\n```\noverloaded\n```",
+        "❌ Run failed after 1 provider error:\n```\noverloaded\n```",
+      ]);
+
+      // State is reset: a later clean run posts nothing extra.
+      discord.sent.length = 0;
+      await harness.emit("agent_start");
+      await harness.emit("agent_end");
+      await harness.emit("agent_settled", { aborted: false });
+      expect(discord.sent).toEqual([]);
+    });
+
+    it("does not report failure for an aborted run", async () => {
+      discord.echo = false;
+      const harness = createHarness();
+      await harness.start();
+
+      await harness.emit("agent_start");
+      await harness.emit("message_end", errorMessage());
+      await harness.emit("agent_end");
+      await harness.emit("agent_settled", { aborted: true });
+
+      expect(discord.sent).toHaveLength(2);
+      expect(discord.sent[1]).toBe("🛑 Agent interrupted");
+    });
+
+    it("neutralises mentions and code fences in error text", async () => {
+      discord.echo = false;
+      const harness = createHarness();
+      await harness.start();
+
+      await harness.emit("agent_start");
+      await harness.emit("message_end", errorMessage("@everyone ```boom```"));
+
+      expect(discord.sent[0]).toBe(
+        "⚠️ Provider error (Pi may retry automatically):\n```\n@everyone '''boom'''\n```",
+      );
+    });
+  });
+
   it("posts tool-start summaries but never tool results", async () => {
     const harness = createHarness();
     await harness.start();

@@ -51,6 +51,7 @@ import {
   isAbortLikeError,
   sleep,
   withTimeout,
+  formatErrorForDiscord,
 } from "./helpers.js";
 
 // ─── Reconnection constants ──────────────────────────────────────────────────
@@ -78,6 +79,12 @@ export default function (pi: ExtensionAPI) {
   let pendingReplyUserId: string | null = null;
   let postedThinkingNotice = false;
   let postedAssistantReply = false;
+  // Provider-error tracking across Pi's automatic retries. agent_end fires after
+  // every failed attempt (and Pi may retry afterwards), so this is reset only
+  // on success or when the run settles — never at agent_start.
+  let providerErrorCount = 0;
+  let lastProviderError: string | null = null;
+  let providerErrorUserId: string | null = null;
   let lastImageArtifactPath: string | null = null;
   let discordTypingActive = false;
   let discordTypingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -652,6 +659,32 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // Surface provider/request failures. Pi records them as assistant messages
+    // with stopReason "error" and (usually) empty content, which the text
+    // mirroring below would silently skip.
+    if (event.message.role === "assistant") {
+      const stopReason = event.message.stopReason;
+      if (stopReason === "error") {
+        providerErrorCount += 1;
+        lastProviderError = formatErrorForDiscord(event.message.errorMessage);
+        providerErrorUserId = pendingReplyUserId ?? providerErrorUserId;
+        // Only the first error of a streak is announced; repeats during Pi's
+        // automatic retries would be noise. Final failure is reported at
+        // agent_settled.
+        if (providerErrorCount === 1) {
+          await sendActivityStatus(
+            `⚠️ Provider error (Pi may retry automatically):\n${lastProviderError}`,
+          );
+        }
+      } else if (stopReason !== "aborted" && providerErrorCount > 0) {
+        const n = providerErrorCount;
+        providerErrorCount = 0;
+        lastProviderError = null;
+        providerErrorUserId = null;
+        await sendActivityStatus(`✅ Recovered after ${n} provider error${n === 1 ? "" : "s"}.`);
+      }
+    }
+
     // Mirror each completed assistant message independently. Steering user
     // messages therefore appear between the replies that preceded and followed
     // them, exactly as they do in Pi's transcript.
@@ -705,6 +738,20 @@ export default function (pi: ExtensionAPI) {
     // No remaining automatic work (runs, retries, steering, follow-ups) —
     // the session is truly idle and new Discord messages start fresh turns.
     agentBusy = false;
+    // The run ended with no further retry/compaction/queued work. If the last
+    // provider request failed, the run died without a reply — say so.
+    const failedError = lastProviderError;
+    const failedCount = providerErrorCount;
+    const failedUserId = providerErrorUserId;
+    providerErrorCount = 0;
+    lastProviderError = null;
+    providerErrorUserId = null;
+    if (failedError && !event?.aborted) {
+      const mention = failedUserId ? `<@${failedUserId}> ` : "";
+      await sendActivityStatus(
+        `${mention}❌ Run failed after ${failedCount} provider error${failedCount === 1 ? "" : "s"}:\n${failedError}`,
+      );
+    }
     if (event?.aborted) {
       await sendToActiveChannel(
         "🛑 Agent interrupted",

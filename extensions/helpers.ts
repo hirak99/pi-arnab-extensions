@@ -164,3 +164,15 @@ export async function withTimeout<T>(
     if (timer) clearTimeout(timer);
   }
 }
+
+/**
+ * Format a provider/run error for Discord. The text is wrapped in a code block
+ * (so @mentions inside provider payloads cannot ping anyone), whitespace is
+ * collapsed, and length is capped.
+ */
+export function formatErrorForDiscord(errorMessage: unknown, maxLen = 400): string {
+  const raw = typeof errorMessage === "string" ? errorMessage : "";
+  let text = raw.replace(/\s+/g, " ").trim() || "Unknown error";
+  if (text.length > maxLen) text = text.slice(0, maxLen - 1) + "…";
+  return "```\n" + text.replace(/```/g, "'''") + "\n```";
+}

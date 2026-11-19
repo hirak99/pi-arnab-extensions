@@ -109,6 +109,22 @@ When `agent_settled` reports `aborted: true`, the persistent session channel
 receives `🛑 Agent interrupted`. Abortion can come from a human, an extension,
 or session shutdown, so the notice deliberately does not claim a human cause.
 
+### Provider errors
+
+When a model request fails (e.g. `500 server_error`), Pi records an assistant
+message with `stopReason: "error"`. The persistent session channel receives:
+
+- `⚠️ Provider error (Pi may retry automatically)` for the first error of a
+  streak (repeats during automatic retries are suppressed)
+- `✅ Recovered after N provider errors` if a later request succeeds
+- `<@user> ❌ Run failed after N provider errors` at `agent_settled` if the run
+  ended on an error (not aborted), mentioning the Discord user who started it
+
+Pi's `auto_retry_*` events are not delivered to extensions, so attempt counts
+and delays are inferred, not read. Error text is code-fenced, whitespace-
+collapsed and capped at 400 characters. Tool errors are deliberately not
+mirrored.
+
 ### Subagent and background-job activity
 
 When `pi-subagents` and/or `pi-background-tasks` is installed, their activity
