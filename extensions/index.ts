@@ -713,6 +713,44 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // ── Compaction lifecycle notifications ────────────────────────────────
+  // Pi fires these extension events on both automatic (threshold/overflow)
+  // and manual (/compact) compaction. session_before_compact is awaited by
+  // the session before compaction begins — this handler must stay fast and
+  // must NOT return a value (returning { cancel: true } would cancel it).
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pi.on("session_before_compact", async (event: any) => {
+    const reason =
+      event?.reason === "manual"
+        ? "manual /compact"
+        : event?.reason === "overflow"
+          ? "context overflow recovery"
+          : "context threshold reached";
+    await sendActivityStatus(`🗜️ Compacting context… (${reason})`);
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pi.on("session_compact", async (event: any) => {
+    const tokensBefore = event?.compactionEntry?.tokensBefore;
+    const suffix =
+      typeof tokensBefore === "number" && tokensBefore > 0
+        ? ` — ${tokensBefore.toLocaleString("en-US")} tokens before`
+        : "";
+    await sendActivityStatus(`✅ Compaction done${suffix}.`);
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pi.on("session_compact_failed", async (event: any) => {
+    if (event?.aborted) {
+      await sendActivityStatus("🛑 Compaction cancelled.");
+      return;
+    }
+    await sendActivityStatus(
+      `❌ Compaction failed: ${event?.errorMessage ?? "unknown error"}`,
+    );
+  });
+
   // ── Auto-connect on new/resumed sessions (per-project opt-in) ────────
   // Fires when a session starts. Only "new" and "resume" are auto-connected
   // (when the project opts in via .pi/discord-remote.json with
