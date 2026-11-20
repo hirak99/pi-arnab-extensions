@@ -144,10 +144,11 @@ their activity is reported in the persistent session channel:
   🤖 subagent section, ⚙️ background-job section, and/or 👀 watcher section:
   🆕 marks a running activity's first snapshot and ⏳ marks running activities
   reported by an earlier snapshot
-- watcher snapshots include every durable watch, not only running ones. Running
-  poll watches show their interval; stream watches show their mode. Paused,
-  stopped, and broken watches use ⏸️, ⏹️, and 💥 respectively, with the stream
-  restart count shown for broken watches when available
+- watcher snapshots include every durable watch owned by the current Pi
+  session, not only running ones; watches from other sessions are excluded.
+  Running poll watches show their interval; stream watches show their mode.
+  Paused, stopped, and broken watches use ⏸️, ⏹️, and 💥 respectively, with the
+  stream restart count shown for broken watches when available
 - subagent completions/failures and background-job terminal events always post
   immediately, including short-lived activities and activities that finish
   while Pi is idle; completed jobs use ✅, failed jobs ❌, and killed jobs 🛑

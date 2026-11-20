@@ -111,8 +111,8 @@ export class WatchSupervisor {
 		if (!name) throw new WatchError("name must not be empty");
 		if (name.includes("/")) throw new WatchError("name must not contain '/'");
 		for (const entry of this.entries.values()) {
-			if (entry.definition.name === name) {
-				throw new WatchError(`a watch named "${name}" already exists`);
+			if (entry.definition.session_id === input.sessionId && entry.definition.name === name) {
+				throw new WatchError(`a watch named "${name}" already exists in this session`);
 			}
 		}
 		if (input.mode === "poll") {
@@ -171,15 +171,17 @@ export class WatchSupervisor {
 		return definition;
 	}
 
-	list(): Array<{ definition: WatchDefinition; state: WatchRuntimeState }> {
-		return [...this.entries.values()].map((entry) => ({
-			definition: entry.definition,
-			state: entry.state,
-		}));
+	list(sessionId: string): Array<{ definition: WatchDefinition; state: WatchRuntimeState }> {
+		return [...this.entries.values()]
+			.filter((entry) => entry.definition.session_id === sessionId)
+			.map((entry) => ({
+				definition: entry.definition,
+				state: entry.state,
+			}));
 	}
 
-	get(name: string): { definition: WatchDefinition; state: WatchRuntimeState } {
-		const entry = this.byName(name);
+	get(name: string, sessionId: string): { definition: WatchDefinition; state: WatchRuntimeState } {
+		const entry = this.byName(name, sessionId);
 		return { definition: entry.definition, state: entry.state };
 	}
 
@@ -188,13 +190,13 @@ export class WatchSupervisor {
 		return entry ? { definition: entry.definition, state: entry.state } : undefined;
 	}
 
-	async pause(name: string): Promise<void> {
-		const entry = this.byName(name);
+	async pause(name: string, sessionId: string): Promise<void> {
+		const entry = this.byName(name, sessionId);
 		await this.stopEntry(entry, "paused");
 	}
 
-	async resume(name: string): Promise<void> {
-		const entry = this.byName(name);
+	async resume(name: string, sessionId: string): Promise<void> {
+		const entry = this.byName(name, sessionId);
 		if (entry.state.status === "running") return;
 		entry.state.status = "running";
 		entry.state.broken = false;
@@ -203,15 +205,15 @@ export class WatchSupervisor {
 		void this.startEntry(entry);
 	}
 
-	async remove(name: string): Promise<void> {
-		const entry = this.byName(name);
+	async remove(name: string, sessionId: string): Promise<void> {
+		const entry = this.byName(name, sessionId);
 		await this.stopEntry(entry, "stopped");
 		this.entries.delete(entry.definition.id);
 		await this.registry.remove(entry.definition.id);
 	}
 
-	async tail(name: string, maxLines: number): Promise<string[]> {
-		const entry = this.byName(name);
+	async tail(name: string, sessionId: string, maxLines: number): Promise<string[]> {
+		const entry = this.byName(name, sessionId);
 		return this.registry.readLogTail(entry.definition.id, maxLines);
 	}
 
@@ -222,11 +224,11 @@ export class WatchSupervisor {
 		}
 	}
 
-	private byName(name: string): WatchEntry {
+	private byName(name: string, sessionId: string): WatchEntry {
 		for (const entry of this.entries.values()) {
-			if (entry.definition.name === name) return entry;
+			if (entry.definition.session_id === sessionId && entry.definition.name === name) return entry;
 		}
-		throw new WatchError(`no watch named "${name}"`);
+		throw new WatchError(`no watch named "${name}" in this session`);
 	}
 
 	private newEntry(definition: WatchDefinition, state: WatchRuntimeState): WatchEntry {

@@ -68,7 +68,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 	const supervisor = new WatchSupervisor(registry, async (watch, body) => {
 		await outbox.sendDirect({ from: `watch:${watch.id}`, to: watch.session_id, body });
 	});
-	let statusApiUnsub: (() => void) | undefined = registerWatchStatusApi(pi, () => supervisor.list());
+	let statusApiUnsub: (() => void) | undefined = registerWatchStatusApi(pi, () => supervisor.list(owningSessionId()));
 	let delivery: InboxDelivery | undefined;
 	let sessionId: string | undefined;
 	// Set in session_start if another extension owns one of our tool names.
@@ -78,6 +78,11 @@ export default function watchExtension(pi: ExtensionAPI) {
 
 	function guardConflicts(): void {
 		if (loadConflict) throw new Error(loadConflict);
+	}
+
+	function owningSessionId(): string {
+		if (!sessionId) throw new WatchError("watch session is not initialized");
+		return sessionId;
 	}
 
 	async function startDelivery(ctx: ExtensionContext): Promise<void> {
@@ -161,7 +166,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		],
 		executionMode: "sequential",
 		parameters: Type.Object({
-			name: Type.String({ description: "Unique watch name (no '/')" }),
+			name: Type.String({ description: "Unique watch name in this session (no '/')" }),
 			run: Type.String({ description: "Check command, run via bash -c; must exit quickly" }),
 			every_seconds: Type.Optional(Type.Number({ description: `Seconds between runs; integer >= ${MIN_EVERY_SECONDS}, default ${DEFAULT_EVERY_SECONDS}` })),
 			initial_delay_seconds: Type.Optional(Type.Number({ description: "Seconds before the very first run; default 0 (immediate). Use to avoid firing right after registration." })),
@@ -205,7 +210,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		],
 		executionMode: "sequential",
 		parameters: Type.Object({
-			name: Type.String({ description: "Unique watch name (no '/')" }),
+			name: Type.String({ description: "Unique watch name in this session (no '/')" }),
 			run: Type.String({ description: "Listener command, run once via bash -c; expected to run long" }),
 			match: Type.Optional(Type.String({ description: "Regular expression; matching stdout lines become notifications (default: every non-empty line)" })),
 			on_finish: Type.Optional(Type.Boolean({ description: "Notify once when the script exits cleanly (default false: clean exit is silent)" })),
@@ -231,14 +236,14 @@ export default function watchExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "watch_list",
 		label: "List watches",
-		description: "List all watches with mode, status, and scheduling details. Definitions persist across Pi restarts; running processes do not (a restarted session shows watches as stopped until resumed).",
-		promptSnippet: "List durable watches and their statuses",
+		description: "List the current session's watches with mode, status, and scheduling details. Definitions persist across Pi restarts and remain bound to their owning session; running processes do not (restarting the same session shows its watches as stopped until resumed).",
+		promptSnippet: "List the current session's durable watches and their statuses",
 		parameters: Type.Object({}),
 		async execute() {
 		guardConflicts();
 			return toolResult({
 				watch_root: root,
-				watches: supervisor.list().map(({ definition, state }) => ({
+				watches: supervisor.list(owningSessionId()).map(({ definition, state }) => ({
 					name: definition.name,
 					id: definition.id,
 					mode: definition.mode,
@@ -267,7 +272,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 		guardConflicts();
 			try {
-				return toolResult(supervisor.get(params.name));
+				return toolResult(supervisor.get(params.name, owningSessionId()));
 			} catch (error) {
 				toWatchError(error);
 			}
@@ -285,7 +290,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 		guardConflicts();
 			try {
-				await supervisor.pause(params.name);
+				await supervisor.pause(params.name, owningSessionId());
 				return toolResult({ paused: params.name });
 			} catch (error) {
 				toWatchError(error);
@@ -304,7 +309,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 		guardConflicts();
 			try {
-				await supervisor.resume(params.name);
+				await supervisor.resume(params.name, owningSessionId());
 				return toolResult({ resumed: params.name });
 			} catch (error) {
 				toWatchError(error);
@@ -323,7 +328,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 		guardConflicts();
 			try {
-				await supervisor.remove(params.name);
+				await supervisor.remove(params.name, owningSessionId());
 				return toolResult({ removed: params.name });
 			} catch (error) {
 				toWatchError(error);
@@ -345,8 +350,8 @@ export default function watchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 		guardConflicts();
 			try {
-				const { state } = supervisor.get(params.name);
-				const logLines = await supervisor.tail(params.name, params.lines ?? 50);
+				const { state } = supervisor.get(params.name, owningSessionId());
+				const logLines = await supervisor.tail(params.name, owningSessionId(), params.lines ?? 50);
 				return toolResult({ lines: logLines, status: statusLine(state) });
 			} catch (error) {
 				toWatchError(error);

@@ -22,6 +22,8 @@ Two modes, one contract each:
 Shared lifecycle and observability:
 
 - `watch_list`, `watch_inspect`, `watch_pause`, `watch_resume`, `watch_remove`
+  operate only on watches owned by the current Pi session. Watch names must be
+  unique within a session; different sessions may reuse the same name.
 - `watch_tail(name, lines=50)` — the full captured output with
   `[stdout]:` / `[stderr]:` prefixes and a synthesized `[status]:` trailer
   ("script is still running", "script exited with code N", "watch is paused",
@@ -37,7 +39,10 @@ Semantics:
   `WATCH_NAME`, `WATCH_MODE`). Keep cursors there so restarts do not
   re-notify.
 - Definitions persist on disk under `~/.pi/pi-watch/` (override with
-  `PI_WATCH_DIR`); running processes do not survive a Pi restart (v1).
+  `PI_WATCH_DIR`) and remain bound to their owning session ID. A new session,
+  including one started in the same directory, does not list or control a
+  previous session's watches. Running processes do not survive a Pi restart
+  (v1): reopening the same session shows its watches as stopped until resumed.
   Notifications are delivered through the `pi-durable-inbox` outbox: durable,
   draft-safe, and queued for session startup.
 

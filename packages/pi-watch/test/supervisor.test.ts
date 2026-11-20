@@ -131,7 +131,7 @@ test("stream: non-zero exit notifies broke and restarts with backoff, then recov
 	await waitFor(() => events.some((event) => event.includes("broke")), "broke");
 	await waitFor(() => events.some((event) => event.includes("recovered")), "recovered after restart");
 	await waitFor(() => events.some((event) => event.includes("finished")), "clean finish after restart");
-	const { state } = supervisor.get("restart");
+	const { state } = supervisor.get("restart", SESSION);
 	assert.equal(state.broken, false);
 });
 
@@ -157,18 +157,55 @@ test("watch lifecycle: pause stops events, resume restarts, remove deletes defin
 	const shell = (exit: string) => `n=$(cat ${marker} 2>/dev/null || echo 0); echo $((n+1)) > ${marker}; echo "seen $n"; exit ${exit}`;
 	await supervisor.create({ name: "life", mode: "poll", run: shell("1"), everySeconds: 1, sessionId: SESSION });
 	await waitFor(() => events.length >= 1, "first event");
-	await supervisor.pause("life");
+	await supervisor.pause("life", SESSION);
 	const pausedAt = events.length;
 	await delay(1300);
 	assert.equal(events.length, pausedAt, "paused watch produces no events");
 
-	await supervisor.resume("life");
+	await supervisor.resume("life", SESSION);
 	await waitFor(() => events.length > pausedAt, "event after resume");
 
-	await supervisor.remove("life");
-	assert.throws(() => supervisor.get("life"), WatchError);
+	await supervisor.remove("life", SESSION);
+	assert.throws(() => supervisor.get("life", SESSION), WatchError);
 	const registry = new WatchRegistry(root);
 	assert.deepEqual(await registry.listDefinitions(), []);
+});
+
+test("session scope isolates listing and lifecycle operations while allowing reused names", async (t) => {
+	const { supervisor } = await withSupervisor(t);
+	const otherSession = "session-test-2";
+	const first = await supervisor.create({
+		name: "shared-name",
+		mode: "poll",
+		run: "exit 0",
+		everySeconds: 3600,
+		sessionId: SESSION,
+	});
+	const second = await supervisor.create({
+		name: "shared-name",
+		mode: "poll",
+		run: "exit 0",
+		everySeconds: 3600,
+		sessionId: otherSession,
+	});
+
+	assert.deepEqual(supervisor.list(SESSION).map(({ definition }) => definition.id), [first.id]);
+	assert.deepEqual(supervisor.list(otherSession).map(({ definition }) => definition.id), [second.id]);
+	assert.equal(supervisor.get("shared-name", SESSION).definition.id, first.id);
+	assert.equal(supervisor.get("shared-name", otherSession).definition.id, second.id);
+	assert.throws(() => supervisor.get("shared-name", "unknown-session"), WatchError);
+
+	await supervisor.pause("shared-name", SESSION);
+	assert.equal(supervisor.get("shared-name", SESSION).state.status, "paused");
+	assert.equal(supervisor.get("shared-name", otherSession).state.status, "running");
+	await supervisor.resume("shared-name", SESSION);
+	assert.equal(supervisor.get("shared-name", SESSION).state.status, "running");
+
+	await supervisor.remove("shared-name", SESSION);
+	assert.throws(() => supervisor.get("shared-name", SESSION), WatchError);
+	assert.equal(supervisor.get("shared-name", otherSession).definition.id, second.id);
+	await assert.rejects(() => supervisor.pause("shared-name", SESSION), WatchError);
+	await assert.rejects(() => supervisor.tail("shared-name", SESSION, 50), WatchError);
 });
 
 test("watch_tail log captures [stdout]/[stderr] lines and status trailer input", async (t) => {
@@ -179,8 +216,8 @@ test("watch_tail log captures [stdout]/[stderr] lines and status trailer input",
 		run: "echo out-line; echo err-line >&2; sleep 0.2; exit 3",
 		sessionId: SESSION,
 	});
-	await waitFor(async () => (await supervisor.tail("logged", 50)).some((line) => line.includes("code 3")), "exit logged");
-	const lines = await supervisor.tail("logged", 50);
+	await waitFor(async () => (await supervisor.tail("logged", SESSION, 50)).some((line) => line.includes("code 3")), "exit logged");
+	const lines = await supervisor.tail("logged", SESSION, 50);
 	assert.ok(lines.some((line) => line === "[stdout]: out-line"));
 	assert.ok(lines.some((line) => line === "[stderr]: err-line"));
 	assert.ok(lines.some((line) => line === "[status]: script exited with code 3"));
@@ -202,7 +239,7 @@ test("initial_delay_seconds postpones the first run only", async (t) => {
 	assert.match(events[0]!, /early/);
 	await waitFor(() => events.length >= 2, "steady cadence continues after the delay");
 	assert.match(events[1]!, /— event #2 for this watch/);
-	const { state } = supervisor.get("delayed");
+	const { state } = supervisor.get("delayed", SESSION);
 	assert.equal(state.event_count >= 2, true);
 	assert.notEqual(state.last_fired_at, null);
 });
