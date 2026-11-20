@@ -132,17 +132,22 @@ and delays are inferred, not read. Error text is code-fenced, whitespace-
 collapsed and capped at 400 characters. Tool errors are deliberately not
 mirrored.
 
-### Subagent and background-job activity
+### Optional subagent, background-job, and watcher activity
 
-When `pi-subagents` and/or `pi-background-tasks` is installed, their activity
-is reported in the persistent session channel:
+When `pi-subagents`, `pi-background-tasks`, and/or `pi-watch` is installed,
+their activity is reported in the persistent session channel:
 
 - subagent starts update internal state without posting an immediate message;
-  running background jobs are fetched on demand through the plugin's EventBus
-  status API
+  running background jobs and all durable watches are fetched on demand through
+  their plugins' EventBus status APIs
 - every `agent_end` posts one combined snapshot below the turn divider, with a
-  🤖 subagent section and/or an ⚙️ background-job section: 🆕 marks an activity's
-  first snapshot and ⏳ marks activities reported by an earlier snapshot
+  🤖 subagent section, ⚙️ background-job section, and/or 👀 watcher section:
+  🆕 marks a running activity's first snapshot and ⏳ marks running activities
+  reported by an earlier snapshot
+- watcher snapshots include every durable watch, not only running ones. Running
+  poll watches show their interval; stream watches show their mode. Paused,
+  stopped, and broken watches use ⏸️, ⏹️, and 💥 respectively, with the stream
+  restart count shown for broken watches when available
 - subagent completions/failures and background-job terminal events always post
   immediately, including short-lived activities and activities that finish
   while Pi is idle; completed jobs use ✅, failed jobs ❌, and killed jobs 🛑
@@ -151,9 +156,11 @@ is reported in the persistent session channel:
   serialized delivery queue to preserve order
 - duplicate background terminal events are ignored by task ID
 
-Both plugins are optional and accessed only through `pi.events`. If either is
-absent, its section is silently omitted; if neither has running activity, no
-snapshot is posted and all other Discord features continue unchanged.
+All three plugins are optional and accessed only through `pi.events`; Discord
+Remote does not import or require them. An absent plugin, error response, or
+malformed response silently omits only that plugin's section without affecting
+the other sections or any other Discord feature. If no plugin has activity to
+display, no snapshot is posted.
 
 ### Auto-start (per-project opt-in)
 

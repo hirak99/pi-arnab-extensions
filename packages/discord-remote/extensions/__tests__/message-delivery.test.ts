@@ -120,6 +120,8 @@ function createHarness() {
 const BG_REQUEST = "pi-background-tasks:request:v1";
 const BG_RESPONSE = "pi-background-tasks:response:v1";
 const BG_TERMINAL = "pi-background-tasks:terminal:v1";
+const WATCH_REQUEST = "pi-watch:request:v1";
+const WATCH_RESPONSE = "pi-watch:response:v1";
 
 function installBackgroundTaskPlugin(
   harness: ReturnType<typeof createHarness>,
@@ -153,6 +155,35 @@ function terminalBackgroundTask(task: {
     schema_version: "pi-background-tasks.extension-terminal.v1",
     task,
   };
+}
+
+function installWatchPlugin(
+  harness: ReturnType<typeof createHarness>,
+  watches: Array<{
+    id: string;
+    name: string;
+    mode: "poll" | "stream";
+    status: "running" | "paused" | "stopped";
+    every_seconds?: number | null;
+    broken?: boolean;
+    restart_attempt?: number;
+  }>,
+) {
+  const requests: any[] = [];
+  harness.onBus(WATCH_REQUEST, (request) => {
+    requests.push(request);
+    if (request?.operation !== "status") return;
+    queueMicrotask(() => {
+      void harness.emitBus(WATCH_RESPONSE, {
+        schema_version: "pi-watch.extension-response.v1",
+        request_id: request.request_id,
+        operation: "status",
+        ok: true,
+        result: { watches },
+      });
+    });
+  });
+  return requests;
 }
 
 function textMessage(role: "assistant" | "user", text: string) {
@@ -397,6 +428,99 @@ describe("append-only transcript delivery", () => {
       payload: {},
     });
     expect(requests[0].request_id).not.toBe(requests[1].request_id);
+  });
+
+  it("shows every watch with new, running, paused, stopped, and broken markers", async () => {
+    const harness = createHarness();
+    await harness.start();
+    const requests = installWatchPlugin(harness, [
+      { id: "watch-a", name: "CI failures", mode: "poll", status: "running", every_seconds: 60 },
+      { id: "watch-b", name: "GitHub replies", mode: "poll", status: "running", every_seconds: 300 },
+      { id: "watch-c", name: "Deployment events", mode: "stream", status: "running" },
+      { id: "watch-d", name: "Documentation rebuild", mode: "stream", status: "paused" },
+      { id: "watch-e", name: "Previous release monitor", mode: "poll", status: "stopped", every_seconds: 60 },
+      { id: "watch-f", name: "Log listener", mode: "stream", status: "running", broken: true, restart_attempt: 2 },
+    ]);
+
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+
+    expect(discord.sent).toEqual([
+      DIVIDER,
+      "👀 6 watchers\n" +
+        "🆕 CI failures · poll · every 60s\n" +
+        "🆕 GitHub replies · poll · every 5m\n" +
+        "🆕 Deployment events · stream\n" +
+        "⏸️ Documentation rebuild · stream · paused\n" +
+        "⏹️ Previous release monitor · poll · stopped\n" +
+        "💥 Log listener · stream · broken · retry #2",
+      DIVIDER,
+      "👀 6 watchers\n" +
+        "⏳ CI failures · poll · every 60s\n" +
+        "⏳ GitHub replies · poll · every 5m\n" +
+        "⏳ Deployment events · stream\n" +
+        "⏸️ Documentation rebuild · stream · paused\n" +
+        "⏹️ Previous release monitor · poll · stopped\n" +
+        "💥 Log listener · stream · broken · retry #2",
+    ]);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({
+      schema_version: "pi-watch.extension-request.v1",
+      operation: "status",
+      payload: {},
+    });
+    expect(requests[0].request_id).not.toBe(requests[1].request_id);
+  });
+
+  it("keeps other activity working when the watch plugin is absent", async () => {
+    const harness = createHarness();
+    await harness.start();
+    await harness.emitBus("subagents:ready");
+    await harness.emitBus("subagents:started", {
+      id: "agent-a",
+      description: "Research API",
+    });
+
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+
+    expect(discord.sent).toEqual([
+      DIVIDER,
+      "🤖 1 subagent working…\n🆕 Research API",
+    ]);
+  });
+
+  it.each([
+    { ok: false, error: "watch registry unavailable" },
+    { ok: true, result: { watches: "malformed" } },
+  ])("isolates watch status failures from other activity: %j", async (response) => {
+    const harness = createHarness();
+    await harness.start();
+    harness.onBus(WATCH_REQUEST, (request) => {
+      queueMicrotask(() => {
+        void harness.emitBus(WATCH_RESPONSE, {
+          schema_version: "pi-watch.extension-response.v1",
+          request_id: request.request_id,
+          operation: "status",
+          ...response,
+        });
+      });
+    });
+    await harness.emitBus("subagents:ready");
+    await harness.emitBus("subagents:started", {
+      id: "agent-a",
+      description: "Research API",
+    });
+
+    await harness.emit("agent_start");
+    await harness.emit("agent_end");
+
+    expect(discord.sent).toEqual([
+      DIVIDER,
+      "🤖 1 subagent working…\n🆕 Research API",
+    ]);
   });
 
   it("keeps subagent snapshots working when the background plugin is absent", async () => {

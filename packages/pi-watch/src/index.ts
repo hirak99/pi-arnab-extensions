@@ -7,6 +7,7 @@ import { InboxDelivery, MessageStore } from "pi-durable-inbox";
 
 import { senderIdentity, statusLine } from "./format.ts";
 import { WatchRegistry } from "./registry.ts";
+import { registerWatchStatusApi } from "./status-api.ts";
 import { WatchSupervisor, WatchError } from "./supervisor.ts";
 import {
 	DEFAULT_EVERY_SECONDS,
@@ -67,6 +68,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 	const supervisor = new WatchSupervisor(registry, async (watch, body) => {
 		await outbox.sendDirect({ from: `watch:${watch.id}`, to: watch.session_id, body });
 	});
+	let statusApiUnsub: (() => void) | undefined = registerWatchStatusApi(pi, () => supervisor.list());
 	let delivery: InboxDelivery | undefined;
 	let sessionId: string | undefined;
 	// Set in session_start if another extension owns one of our tool names.
@@ -132,6 +134,8 @@ export default function watchExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		statusApiUnsub?.();
+		statusApiUnsub = undefined;
 		await supervisor.shutdown();
 		await delivery?.stop();
 		delivery = undefined;

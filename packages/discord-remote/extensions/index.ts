@@ -137,8 +137,8 @@ export default function (pi: ExtensionAPI) {
   let questionAbortListener: (() => void) | null = null;
   let questionAbortSignal: AbortSignal | null = null;
 
-  // ── Optional activity tracking (pi-subagents, pi-background-tasks) ───
-  // Both integrations use only the shared pi.events bus. Missing plugins
+  // ── Optional activity tracking (pi-subagents, pi-background-tasks, pi-watch)
+  // All integrations use only the shared pi.events bus. Missing plugins
   // therefore leave these features inert without imports or startup errors.
   let subagentsAvailable = false;
   interface RunningSubagent {
@@ -172,6 +172,29 @@ export default function (pi: ExtensionAPI) {
   const pendingBackgroundStatusRequests = new Map<
     string,
     (tasks: BackgroundTask[] | undefined) => void
+  >();
+
+  const WATCH_REQUEST_CHANNEL = "pi-watch:request:v1";
+  const WATCH_RESPONSE_CHANNEL = "pi-watch:response:v1";
+  const WATCH_REQUEST_SCHEMA = "pi-watch.extension-request.v1";
+  const WATCH_RESPONSE_SCHEMA = "pi-watch.extension-response.v1";
+
+  interface WatchSnapshot {
+    id: string;
+    name: string;
+    mode: "poll" | "stream";
+    status: "running" | "paused" | "stopped";
+    every_seconds?: number | null;
+    broken?: boolean;
+    restart_attempt?: number;
+  }
+  interface DisplayWatch extends WatchSnapshot {
+    reported: boolean;
+  }
+  const watches = new Map<string, DisplayWatch>();
+  const pendingWatchStatusRequests = new Map<
+    string,
+    (watches: WatchSnapshot[] | undefined) => void
   >();
   let activityReportQueue: Promise<void> = Promise.resolve();
 
@@ -230,6 +253,27 @@ export default function (pi: ExtensionAPI) {
       settle(
         tasks.filter(
           (task: any): task is BackgroundTask => typeof task?.id === "string" && task.id.length > 0,
+        ),
+      );
+    }),
+    pi.events.on(WATCH_RESPONSE_CHANNEL, (event: any) => {
+      if (event?.schema_version !== WATCH_RESPONSE_SCHEMA || event?.operation !== "status") return;
+      const settle = pendingWatchStatusRequests.get(event?.request_id);
+      if (!settle) return;
+      if (!event?.ok) {
+        settle(undefined);
+        return;
+      }
+      const snapshots = event?.result?.watches;
+      if (!Array.isArray(snapshots)) return;
+      settle(
+        snapshots.filter(
+          (watch: any): watch is WatchSnapshot =>
+            typeof watch?.id === "string" &&
+            watch.id.length > 0 &&
+            typeof watch?.name === "string" &&
+            (watch?.mode === "poll" || watch?.mode === "stream") &&
+            (watch?.status === "running" || watch?.status === "paused" || watch?.status === "stopped"),
         ),
       );
     }),
@@ -302,6 +346,74 @@ export default function (pi: ExtensionAPI) {
     }
     runningBackgroundTasks.clear();
     for (const [id, task] of next) runningBackgroundTasks.set(id, task);
+  }
+
+  // pi-watch answers with every durable watch, including paused and stopped
+  // definitions. As with background tasks, an absent plugin leaves the last
+  // successful snapshot untouched and never affects the other sections.
+  function queryWatches(): Promise<WatchSnapshot[] | undefined> {
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (snapshots: WatchSnapshot[] | undefined): void => {
+        if (settled) return;
+        settled = true;
+        pendingWatchStatusRequests.delete(requestId);
+        resolve(snapshots);
+      };
+      pendingWatchStatusRequests.set(requestId, settle);
+      try {
+        pi.events.emit(WATCH_REQUEST_CHANNEL, {
+          schema_version: WATCH_REQUEST_SCHEMA,
+          request_id: requestId,
+          operation: "status",
+          payload: {},
+        });
+      } catch {
+        settle(undefined);
+        return;
+      }
+      queueMicrotask(() => settle(undefined));
+    });
+  }
+
+  async function refreshWatches(): Promise<void> {
+    const snapshots = await queryWatches();
+    if (!snapshots) return;
+    const next = new Map<string, DisplayWatch>();
+    for (const watch of snapshots) {
+      next.set(watch.id, {
+        ...watch,
+        reported: watches.get(watch.id)?.reported ?? false,
+      });
+    }
+    watches.clear();
+    for (const [id, watch] of next) watches.set(id, watch);
+  }
+
+  function formatWatchInterval(seconds: number | null | undefined): string | null {
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return null;
+    if (seconds < 120) return `${seconds}s`;
+    if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+    if (seconds % 60 === 0) return `${seconds / 60}m`;
+    return `${seconds}s`;
+  }
+
+  function watchActivityLine(watch: DisplayWatch): string {
+    const name = activityLabel(watch.name, watch.id);
+    const base = `${name} · ${watch.mode}`;
+    if (watch.broken) {
+      const retry = typeof watch.restart_attempt === "number" && watch.restart_attempt > 0
+        ? ` · retry #${watch.restart_attempt}`
+        : "";
+      return `💥 ${base} · broken${retry}`;
+    }
+    if (watch.status === "paused") return `⏸️ ${base} · paused`;
+    if (watch.status === "stopped") return `⏹️ ${base} · stopped`;
+    const interval = watch.mode === "poll" ? formatWatchInterval(watch.every_seconds) : null;
+    const marker = watch.reported ? "⏳" : "🆕";
+    watch.reported = true;
+    return `${marker} ${base}${interval ? ` · every ${interval}` : ""}`;
   }
 
   function onBackgroundTaskSettled(event: any): Promise<void> | undefined {
@@ -428,6 +540,11 @@ export default function (pi: ExtensionAPI) {
         return `${marker} ${backgroundTaskLabel(meta)}`;
       });
       sections.push(`⚙️ ${n} background job${n === 1 ? "" : "s"} running…\n${lines.join("\n")}`);
+    }
+    if (watches.size > 0) {
+      const entries = [...watches.values()];
+      const lines = entries.map(watchActivityLine);
+      sections.push(`👀 ${entries.length} watcher${entries.length === 1 ? "" : "s"}\n${lines.join("\n")}`);
     }
     if (sections.length === 0) return;
     for (const chunk of splitMessage(sections.join("\n\n"))) {
@@ -739,13 +856,15 @@ export default function (pi: ExtensionAPI) {
 
     // Refresh on demand rather than polling: the optional background-task
     // plugin returns every retained task, and we keep only running jobs.
+    // pi-watch returns every durable watch, including paused/stopped ones.
     await refreshRunningBackgroundTasks();
+    await refreshWatches();
 
     // Replies have already been posted at message_end. Keep the completion
     // mention and visual boundary as run-level metadata, not a reply buffer.
     const hasRunningSubagents = subagentsAvailable && runningSubagents.size > 0;
     const hasRunningBackgroundTasks = runningBackgroundTasks.size > 0;
-    if (postedAssistantReply || hasRunningSubagents || hasRunningBackgroundTasks) {
+    if (postedAssistantReply || hasRunningSubagents || hasRunningBackgroundTasks || watches.size > 0) {
       const mention = pendingReplyUserId ? `<@${pendingReplyUserId}> ` : "";
       await sendToActiveChannel(mention + TURN_DIVIDER);
       postedAssistantReply = false;
@@ -1115,6 +1234,7 @@ export default function (pi: ExtensionAPI) {
     // doesn't accumulate stale handlers on the shared bus.
     for (const unsub of activityUnsubs.splice(0)) unsub();
     for (const settle of [...pendingBackgroundStatusRequests.values()]) settle(undefined);
+    for (const settle of [...pendingWatchStatusRequests.values()]) settle(undefined);
     clearReconnectTimer();
     isShuttingDown = true;
     // Hand the live client to the replacement runtime. Build the bridge
