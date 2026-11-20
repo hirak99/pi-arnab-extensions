@@ -1,6 +1,11 @@
 # pi-discord-remote
 
 > Control your [Pi](https://pi.dev) coding-agent session from Discord.
+>
+> **Fork attribution:** This is a heavily modified fork maintained by Arnab,
+> based on [Chuan Bai's original `pi-discord-remote`](https://github.com/t2o2/pi-discord-remote).
+> It is not the upstream npm package. Original authorship and MIT licensing are
+> retained; see [LICENSE](LICENSE).
 
 ![pi-discord-remote demo](demo.gif)
 

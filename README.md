@@ -1,14 +1,15 @@
 # pi-arnab-extensions
 
-A local-first monorepo for reviewed Pi extensions maintained by Arnab and the
-DevOps Agent.
+A local-first monorepo for Pi extensions managed by Arnab and the DevOps
+Agent. Some packages are original projects; others are heavily modified forks.
+Each package retains its own authorship, attribution, and license.
 
 ## Packages
 
-| Package | Directory | Origin |
+| Package | Directory | Origin and license |
 | --- | --- | --- |
-| Discord Remote | `packages/discord-remote` | Full history imported from `~/git/pi-discord-remote` |
-| Agentic Team | `packages/agentic-team` | Full history imported from `~/git/pi-agentic-team` |
+| Discord Remote | `packages/discord-remote` | Heavily modified fork of [Chuan Bai's `pi-discord-remote`](https://github.com/t2o2/pi-discord-remote); MIT |
+| Agentic Team | `packages/agentic-team` | Original project; Apache-2.0 |
 
 The original repositories remain unchanged. This monorepo has no remote until
 one is explicitly configured.

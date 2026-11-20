@@ -10,6 +10,7 @@
     "remote-control"
   ],
   "author": "Chuan Bai",
+  "contributors": ["Arnab"],
   "license": "MIT",
   "repository": {
     "type": "git",
