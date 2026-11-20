@@ -4,16 +4,21 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "keywords": ["pi-package"],
-  "workspaces": ["packages/*"],
+  "keywords": [
+    "pi-package"
+  ],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "npm run build --workspace=pi-discord-remote",
-    "check": "npm run check --workspace=pi-discord-remote && npm test --workspace=pi-discord-remote && npm run check --workspace=pi-agentic-team"
+    "check": "npm run check --workspace=pi-durable-inbox && npm run check --workspace=pi-discord-remote && npm run check --workspace=pi-agentic-team && npm run check --workspace=pi-watch"
   },
   "pi": {
     "extensions": [
       "./packages/discord-remote/dist",
-      "./packages/agentic-team/src/index.ts"
+      "./packages/agentic-team/src/index.ts",
+      "./packages/pi-watch/src/index.ts"
     ]
   }
 }
