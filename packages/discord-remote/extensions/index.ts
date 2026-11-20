@@ -404,16 +404,16 @@ export default function (pi: ExtensionAPI) {
     const base = `${name} · ${watch.mode}`;
     if (watch.broken) {
       const retry = typeof watch.restart_attempt === "number" && watch.restart_attempt > 0
-        ? ` · retry #${watch.restart_attempt}`
+        ? `, retry #${watch.restart_attempt}`
         : "";
-      return `💥 ${base} · broken${retry}`;
+      return `👀 (Broken${retry}) ${base}`;
     }
-    if (watch.status === "paused") return `⏸️ ${base} · paused`;
-    if (watch.status === "stopped") return `⏹️ ${base} · stopped`;
+    if (watch.status === "paused") return `👀 (Paused) ${base}`;
+    if (watch.status === "stopped") return `👀 (Stopped) ${base}`;
     const interval = watch.mode === "poll" ? formatWatchInterval(watch.every_seconds) : null;
-    const marker = watch.reported ? "⏳" : "🆕";
+    const marker = watch.reported ? "" : "(New) ";
     watch.reported = true;
-    return `${marker} ${base}${interval ? ` · every ${interval}` : ""}`;
+    return `👀 ${marker}${base}${interval ? ` · every ${interval}` : ""}`;
   }
 
   function onBackgroundTaskSettled(event: any): Promise<void> | undefined {
@@ -517,37 +517,25 @@ export default function (pi: ExtensionAPI) {
     await sendToActiveChannel(text, runtime.activeChannelId ?? mirrorTargetChannelId() ?? undefined);
   }
 
-  // Snapshot all running activity at each agent_end. New entries are marked
-  // only in their first snapshot; subsequent snapshots show them as running.
+  // Snapshot all activity at each agent_end. New entries are marked only in
+  // their first snapshot; subsequent snapshots omit the marker.
   async function postRunningActivity(): Promise<void> {
-    const sections: string[] = [];
-    if (subagentsAvailable && runningSubagents.size > 0) {
-      const entries = [...runningSubagents.values()];
-      const n = entries.length;
-      const lines = entries.map((meta) => {
-        const marker = meta.reported ? "⏳" : "🆕";
+    const lines: string[] = [];
+    if (subagentsAvailable) {
+      for (const meta of runningSubagents.values()) {
+        const marker = meta.reported ? "" : "(New) ";
         meta.reported = true;
-        return `${marker} ${subagentLabel(meta)}`;
-      });
-      sections.push(`🤖 ${n} subagent${n === 1 ? "" : "s"} working…\n${lines.join("\n")}`);
+        lines.push(`🤖 ${marker}${subagentLabel(meta)}`);
+      }
     }
-    if (runningBackgroundTasks.size > 0) {
-      const entries = [...runningBackgroundTasks.values()];
-      const n = entries.length;
-      const lines = entries.map((meta) => {
-        const marker = meta.reported ? "⏳" : "🆕";
-        meta.reported = true;
-        return `${marker} ${backgroundTaskLabel(meta)}`;
-      });
-      sections.push(`⚙️ ${n} background job${n === 1 ? "" : "s"} running…\n${lines.join("\n")}`);
+    for (const meta of runningBackgroundTasks.values()) {
+      const marker = meta.reported ? "" : "(New) ";
+      meta.reported = true;
+      lines.push(`⚙️ ${marker}${backgroundTaskLabel(meta)}`);
     }
-    if (watches.size > 0) {
-      const entries = [...watches.values()];
-      const lines = entries.map(watchActivityLine);
-      sections.push(`👀 ${entries.length} watcher${entries.length === 1 ? "" : "s"}\n${lines.join("\n")}`);
-    }
-    if (sections.length === 0) return;
-    for (const chunk of splitMessage(sections.join("\n\n"))) {
+    for (const watch of watches.values()) lines.push(watchActivityLine(watch));
+    if (lines.length === 0) return;
+    for (const chunk of splitMessage(["Running -", ...lines].join("\n"))) {
       await queueActivityReport(chunk);
     }
   }

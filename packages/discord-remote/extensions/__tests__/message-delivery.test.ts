@@ -415,11 +415,11 @@ describe("append-only transcript delivery", () => {
 
     expect(discord.sent).toEqual([
       DIVIDER,
-      "🤖 1 subagent working…\n🆕 Inspect authentication flow\n\n" +
-        "⚙️ 2 background jobs running…\n🆕 Test suite\n🆕 Documentation server",
+      "Running -\n🤖 (New) Inspect authentication flow\n" +
+        "⚙️ (New) Test suite\n⚙️ (New) Documentation server",
       DIVIDER,
-      "🤖 1 subagent working…\n⏳ Inspect authentication flow\n\n" +
-        "⚙️ 2 background jobs running…\n⏳ Test suite\n⏳ Documentation server",
+      "Running -\n🤖 Inspect authentication flow\n" +
+        "⚙️ Test suite\n⚙️ Documentation server",
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[0]).toMatchObject({
@@ -449,21 +449,21 @@ describe("append-only transcript delivery", () => {
 
     expect(discord.sent).toEqual([
       DIVIDER,
-      "👀 6 watchers\n" +
-        "🆕 CI failures · poll · every 60s\n" +
-        "🆕 GitHub replies · poll · every 5m\n" +
-        "🆕 Deployment events · stream\n" +
-        "⏸️ Documentation rebuild · stream · paused\n" +
-        "⏹️ Previous release monitor · poll · stopped\n" +
-        "💥 Log listener · stream · broken · retry #2",
+      "Running -\n" +
+        "👀 (New) CI failures · poll · every 60s\n" +
+        "👀 (New) GitHub replies · poll · every 5m\n" +
+        "👀 (New) Deployment events · stream\n" +
+        "👀 (Paused) Documentation rebuild · stream\n" +
+        "👀 (Stopped) Previous release monitor · poll\n" +
+        "👀 (Broken, retry #2) Log listener · stream",
       DIVIDER,
-      "👀 6 watchers\n" +
-        "⏳ CI failures · poll · every 60s\n" +
-        "⏳ GitHub replies · poll · every 5m\n" +
-        "⏳ Deployment events · stream\n" +
-        "⏸️ Documentation rebuild · stream · paused\n" +
-        "⏹️ Previous release monitor · poll · stopped\n" +
-        "💥 Log listener · stream · broken · retry #2",
+      "Running -\n" +
+        "👀 CI failures · poll · every 60s\n" +
+        "👀 GitHub replies · poll · every 5m\n" +
+        "👀 Deployment events · stream\n" +
+        "👀 (Paused) Documentation rebuild · stream\n" +
+        "👀 (Stopped) Previous release monitor · poll\n" +
+        "👀 (Broken, retry #2) Log listener · stream",
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[0]).toMatchObject({
@@ -488,7 +488,7 @@ describe("append-only transcript delivery", () => {
 
     expect(discord.sent).toEqual([
       DIVIDER,
-      "🤖 1 subagent working…\n🆕 Research API",
+      "Running -\n🤖 (New) Research API",
     ]);
   });
 
@@ -519,7 +519,7 @@ describe("append-only transcript delivery", () => {
 
     expect(discord.sent).toEqual([
       DIVIDER,
-      "🤖 1 subagent working…\n🆕 Research API",
+      "Running -\n🤖 (New) Research API",
     ]);
   });
 
@@ -537,7 +537,7 @@ describe("append-only transcript delivery", () => {
 
     expect(discord.sent).toEqual([
       DIVIDER,
-      "🤖 1 subagent working…\n🆕 Research API",
+      "Running -\n🤖 (New) Research API",
     ]);
   });
 

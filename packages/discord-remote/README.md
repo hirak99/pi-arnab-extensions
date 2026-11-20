@@ -140,15 +140,15 @@ their activity is reported in the persistent session channel:
 - subagent starts update internal state without posting an immediate message;
   running background jobs and all durable watches are fetched on demand through
   their plugins' EventBus status APIs
-- every `agent_end` posts one combined snapshot below the turn divider, with a
-  🤖 subagent section, ⚙️ background-job section, and/or 👀 watcher section:
-  🆕 marks a running activity's first snapshot and ⏳ marks running activities
-  reported by an earlier snapshot
+- every `agent_end` posts one unified `Running -` snapshot below the turn
+  divider. 🤖 identifies subagents, ⚙️ background jobs, and 👀 watchers; `(New)`
+  marks an item's first snapshot and is omitted from later snapshots
 - watcher snapshots include every durable watch owned by the current Pi
   session, not only running ones; watches from other sessions are excluded.
   Running poll watches show their interval; stream watches show their mode.
-  Paused, stopped, and broken watches use ⏸️, ⏹️, and 💥 respectively, with the
-  stream restart count shown for broken watches when available
+  Paused, stopped, and broken watches remain in the same block with `(Paused)`,
+  `(Stopped)`, and `(Broken)` labels, including the stream restart count when
+  available
 - subagent completions/failures and background-job terminal events always post
   immediately, including short-lived activities and activities that finish
   while Pi is idle; completed jobs use ✅, failed jobs ❌, and killed jobs 🛑
@@ -159,9 +159,9 @@ their activity is reported in the persistent session channel:
 
 All three plugins are optional and accessed only through `pi.events`; Discord
 Remote does not import or require them. An absent plugin, error response, or
-malformed response silently omits only that plugin's section without affecting
-the other sections or any other Discord feature. If no plugin has activity to
-display, no snapshot is posted.
+malformed response silently omits only that plugin's items without affecting
+other activity or any other Discord feature. The entire snapshot is omitted
+only when there are no subagents, background jobs, or watches to display.
 
 ### Auto-start (per-project opt-in)
 
