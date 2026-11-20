@@ -154,6 +154,65 @@ test("rate floor coalesces: last 3 lines plus suppression trailer", async (t) =>
 	assert.match(events[0]!, /— events #1–5 for this watch · \(first fire\)$/);
 });
 
+test("poll: max_events=1 delivers one alert, persists exhaustion, and prevents resume", async (t) => {
+	const { supervisor, events, root } = await withSupervisor(t);
+	const definition = await supervisor.create({
+		name: "once-poll",
+		mode: "poll",
+		run: "echo only-once; exit 1",
+		everySeconds: 1,
+		maxEvents: 1,
+		sessionId: SESSION,
+	});
+	await waitFor(() => events.length >= 1, "one-shot poll event");
+	await waitFor(() => supervisor.get("once-poll", SESSION).state.status === "stopped", "automatic stop");
+	await delay(1200);
+	assert.equal(events.length, 1);
+	assert.match(events[0]!, /only-once/);
+	assert.equal(supervisor.get("once-poll", SESSION).state.event_count, 1);
+	await assert.rejects(() => supervisor.resume("once-poll", SESSION), /max_events=1/);
+	const persisted = await new WatchRegistry(root).loadState(definition.id);
+	assert.equal(persisted?.event_count, 1);
+	assert.equal(persisted?.status, "stopped");
+});
+
+test("stream: max_events=1 delivers only the first match and suppresses on_finish", async (t) => {
+	const { supervisor, events } = await withSupervisor(t);
+	await supervisor.create({
+		name: "once-stream",
+		mode: "stream",
+		run: "echo first; echo second; exit 0",
+		maxEvents: 1,
+		onFinish: true,
+		sessionId: SESSION,
+	});
+	await waitFor(() => events.length >= 1, "one-shot stream event");
+	await waitFor(() => supervisor.get("once-stream", SESSION).state.status === "stopped", "automatic stop");
+	await delay(100);
+	assert.equal(events.length, 1);
+	assert.match(events[0]!, /first/);
+	assert.doesNotMatch(events[0]!, /second|finished/);
+	assert.equal(supervisor.get("once-stream", SESSION).state.event_count, 1);
+});
+
+test("stream: max_events counts source events and flushes a coalesced final batch", async (t) => {
+	const { supervisor, events } = await withSupervisor(t, { eventRateFloorMs: 60_000 });
+	await supervisor.create({
+		name: "finite-burst",
+		mode: "stream",
+		run: "for i in 1 2 3 4; do echo \"event $i\"; done; sleep 1",
+		maxEvents: 3,
+		sessionId: SESSION,
+	});
+	await waitFor(() => events.length >= 1, "final coalesced event");
+	await waitFor(() => supervisor.get("finite-burst", SESSION).state.status === "stopped", "automatic stop");
+	assert.equal(events.length, 1);
+	assert.match(events[0]!, /3 events \(rate-limited\)/);
+	assert.match(events[0]!, /events #1–3/);
+	assert.doesNotMatch(events[0]!, /event 4/);
+	assert.equal(supervisor.get("finite-burst", SESSION).state.event_count, 3);
+});
+
 test("watch lifecycle: pause stops events, resume restarts, remove deletes definition", async (t) => {
 	const { supervisor, events, root } = await withSupervisor(t);
 	const marker = join(await mkdtemp(join(tmpdir(), "pi-watch-marker-")), "count");
@@ -278,6 +337,8 @@ test("creation validates names, intervals, and match regex", async (t) => {
 	await assert.rejects(() => supervisor.create({ name: "dup", mode: "poll", run: "true", everySeconds: 1, sessionId: SESSION }), /already exists/);
 	await assert.rejects(() => supervisor.create({ name: "bad-interval", mode: "poll", run: "true", everySeconds: 0, sessionId: SESSION }), /every_seconds/);
 	await assert.rejects(() => supervisor.create({ name: "bad-regex", mode: "stream", run: "true", match: "(", sessionId: SESSION }), /not a valid regular expression/);
+	await assert.rejects(() => supervisor.create({ name: "bad-max", mode: "poll", run: "true", maxEvents: 0, sessionId: SESSION }), /max_events/);
+	await assert.rejects(() => supervisor.create({ name: "fractional-max", mode: "stream", run: "true", maxEvents: 1.5, sessionId: SESSION }), /max_events/);
 });
 
 test("scripts receive WATCH_STATE and per-run state survives across ticks", async (t) => {

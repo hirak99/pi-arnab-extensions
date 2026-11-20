@@ -18,6 +18,8 @@ export interface WatchDefinition {
 	match?: string | undefined;
 	/** Stream mode only: notify when the script exits cleanly. */
 	on_finish?: boolean | undefined;
+	/** Optional lifetime cap on source alert events; reaching it stops the watch. */
+	max_events?: number | undefined;
 	/** Poll mode only: seconds before a single run is killed. */
 	timeout_seconds: number;
 	/** Poll mode only: seconds before the very first run; default 0 (fire immediately). */

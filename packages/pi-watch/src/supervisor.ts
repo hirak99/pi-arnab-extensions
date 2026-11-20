@@ -109,6 +109,7 @@ export class WatchSupervisor {
 		initialDelaySeconds?: number | undefined;
 		match?: string | undefined;
 		onFinish?: boolean | undefined;
+		maxEvents?: number | undefined;
 		timeoutSeconds?: number | undefined;
 		sessionId: string;
 	}): Promise<WatchDefinition> {
@@ -139,6 +140,9 @@ export class WatchSupervisor {
 		if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1) {
 			throw new WatchError("timeout_seconds must be an integer of at least 1");
 		}
+		if (input.maxEvents !== undefined && (!Number.isInteger(input.maxEvents) || input.maxEvents < 1)) {
+			throw new WatchError("max_events must be an integer of at least 1");
+		}
 		const initialDelaySeconds = input.initialDelaySeconds ?? 0;
 		if (!Number.isInteger(initialDelaySeconds) || initialDelaySeconds < 0) {
 			throw new WatchError("initial_delay_seconds must be an integer of at least 0");
@@ -153,6 +157,7 @@ export class WatchSupervisor {
 			...(input.mode === "poll" && initialDelaySeconds > 0 ? { initial_delay_seconds: initialDelaySeconds } : {}),
 			...(match !== undefined ? { match } : {}),
 			...(input.mode === "stream" && input.onFinish ? { on_finish: true } : {}),
+			...(input.maxEvents !== undefined ? { max_events: input.maxEvents } : {}),
 			timeout_seconds: timeoutSeconds,
 			session_id: input.sessionId,
 			created_at: new Date().toISOString(),
@@ -203,6 +208,9 @@ export class WatchSupervisor {
 
 	async resume(name: string, sessionId: string): Promise<void> {
 		const entry = this.byName(name, sessionId);
+		if (entry.definition.max_events !== undefined && entry.state.event_count >= entry.definition.max_events) {
+			throw new WatchError(`watch "${name}" has reached max_events=${entry.definition.max_events}; create a new watch to re-arm it`);
+		}
 		if (entry.state.status === "running") return;
 		entry.state.status = "running";
 		entry.state.broken = false;
@@ -480,9 +488,21 @@ export class WatchSupervisor {
 	 * floor. Everything is appended to the watch log regardless.
 	 */
 	private async event(entry: WatchEntry, payload: string): Promise<void> {
+		const maxEvents = entry.definition.max_events;
+		if (maxEvents !== undefined && entry.state.event_count + entry.pendingCount >= maxEvents) return;
 		entry.pendingCount += 1;
 		entry.pendingLines.push(payload);
 		if (entry.pendingLines.length > COALESCED_EVENT_LINES) entry.pendingLines.shift();
+		const limitReached = maxEvents !== undefined && entry.state.event_count + entry.pendingCount >= maxEvents;
+		if (limitReached) {
+			// Mark this as an intentional stop before awaiting delivery so a
+			// concurrently exiting stream cannot emit an extra on_finish notice.
+			entry.intentionalStop = true;
+			await this.flushPending(entry);
+			await this.stopEntry(entry, "stopped");
+			await this.registry.appendLog(entry.definition.id, `[status]: max_events=${maxEvents} reached`);
+			return;
+		}
 		if (entry.flushTimer) return;
 		const sinceLast = Date.now() - entry.lastDeliverAt;
 		const wait = entry.lastDeliverAt === 0 || sinceLast >= this.eventRateFloorMs

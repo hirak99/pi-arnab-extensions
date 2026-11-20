@@ -15,7 +15,7 @@ export function formatReference(watch: WatchDefinition): string {
 /** watch_tail trailer: one bracketed line describing live state. */
 export function statusLine(state: WatchRuntimeState): string {
 	if (state.status === "paused") return "[status]: watch is paused";
-	if (state.status === "stopped") return "[status]: watch is stopped (session ended; resume or recreate to run again)";
+	if (state.status === "stopped") return "[status]: watch is stopped (resume to run again; recreate if its event limit is exhausted)";
 	if (state.pid !== null) return "[status]: script is still running";
 	if (state.exit_signal) return `[status]: script exited with signal ${state.exit_signal}`;
 	if (state.exit_code !== null) return `[status]: script exited with code ${state.exit_code}`;

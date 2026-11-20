@@ -6,12 +6,12 @@ happens.
 
 Two modes, one contract each:
 
-- **`watch_create_poll(name, run, every_seconds=60)`** — the command is a
+- **`watch_create_poll(name, run, every_seconds=60, max_events?)`** — the command is a
   *check*. It runs every `every_seconds` (minimum 15s) and must exit quickly:
   exit 0 = silence, exit 1 = one notification with the command's combined
   output, any other exit/signal/timeout = a "broke" notification (once per
   breakage) and a "recovered" notification when checks succeed again.
-- **`watch_create_stream(name, run, match?, on_finish?)`** — the command is a
+- **`watch_create_stream(name, run, match?, on_finish?, max_events?)`** — the command is a
   *listener*. It starts once and runs long; each non-empty stdout line
   matching `match` (a regular expression; default: every non-empty line) is
   one notification with the line as its message. Only stdout can notify;
@@ -31,6 +31,14 @@ Shared lifecycle and observability:
 
 Semantics:
 
+- Watches are best suited for recurring alerts or continuous monitoring. If a
+  one-shot background/completion mechanism is available, prefer it for strictly
+  one-time work. For a one-shot watch alert, set `max_events=1` explicitly.
+- `max_events` is an optional lifetime cap on source alert events: exit-1 poll
+  alerts or matching stream stdout lines, not coalesced deliveries. Reaching it
+  flushes the final notification batch and stops the watch without an extra
+  `on_finish` notice. The definition and logs remain available; pause/resume
+  does not reset the budget, and an exhausted watch must be recreated to re-arm.
 - Deliveries are rate-limited (15s floor per watch plus a short grace window
   so bursts coalesce); a rate-limited notification shows the last 3 event
   lines and a "N notifications before this not shown; use watch_tail"

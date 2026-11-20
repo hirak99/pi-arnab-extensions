@@ -43,7 +43,11 @@ function toWatchError(error: unknown): never {
 const DECISION_RULE =
 	"If the command finishes quickly and answers \"did it happen? yes/no\", use watch_create_poll (the exit code speaks: 0 = silence, non-zero = notification with its output). " +
 	"If the command runs continuously and announces things as they happen, use watch_create_stream (each stdout line speaks; only stdout can notify, stderr is captured to the watch log). " +
-	"Watches are durable and persistent: they keep running and delivering events until watch_remove.";
+	"Watches are durable: definitions persist until watch_remove; events continue while running and stop automatically when max_events is reached.";
+
+const USAGE_GUIDANCE =
+	"Watches are best suited for recurring alerts or continuous monitoring. " +
+	"If you have a mechanism to run background jobs with completion notifications, prefer it over a watch for strictly one-time work.";
 
 const POLL_EXAMPLE = [
 	"Examples:",
@@ -171,11 +175,13 @@ export default function watchExtension(pi: ExtensionAPI) {
 			`Runs at most every ${MIN_EVERY_SECONDS} seconds (default ${DEFAULT_EVERY_SECONDS}); a single run is killed after timeout_seconds (default ${DEFAULT_TIMEOUT_SECONDS}). ` +
 			"initial_delay_seconds postpones the very first run (default 0 = run immediately, which establishes the change-detection baseline). " +
 			"Every fired notification ends with a stats footer: its sequence number and the time since the previous event. " +
+			"max_events is an optional lifetime cap on alert events; reaching it delivers the final batch and stops the watch (recreate it to re-arm). " +
 			`Scripts get a private state directory in $WATCH_STATE (cursor files survive restarts). ${DECISION_RULE}\n${POLL_EXAMPLE}`,
 		promptSnippet: "Create a durable poll watch: re-runs a check command, notifies when its exit code is non-zero",
 		promptGuidelines: [
 			"Use watch_create_poll when the user asks to monitor, watch, or be alerted about an external condition a short command can check.",
-			"Use watch_create_poll when you must wait for an external condition instead of sleeping or polling within a turn.",
+			USAGE_GUIDANCE,
+			"Set max_events=1 for a one-shot alert: the first exit-1 event is delivered, then the watch stops.",
 			"End poll commands with an explicit exit code: 0 for \"nothing to say\", 1 (with output) for \"event\", and never rely on a failing command's accidental exit code.",
 			"Keep per-run state in $WATCH_STATE so a restarted watch does not re-notify old events.",
 		],
@@ -186,6 +192,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 			every_seconds: Type.Optional(Type.Number({ description: `Seconds between runs; integer >= ${MIN_EVERY_SECONDS}, default ${DEFAULT_EVERY_SECONDS}` })),
 			initial_delay_seconds: Type.Optional(Type.Number({ description: "Seconds before the very first run; default 0 (immediate). Use to avoid firing right after registration." })),
 			timeout_seconds: Type.Optional(Type.Number({ description: `Seconds before one run is killed; default ${DEFAULT_TIMEOUT_SECONDS}` })),
+			max_events: Type.Optional(Type.Number({ description: "Lifetime number of exit-1 alerts before stopping; integer >= 1, default unlimited" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 		guardConflicts();
@@ -197,6 +204,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 					everySeconds: params.every_seconds,
 					initialDelaySeconds: params.initial_delay_seconds,
 					timeoutSeconds: params.timeout_seconds,
+					maxEvents: params.max_events,
 					sessionId: ctx.sessionManager.getSessionId(),
 				});
 				return toolResult({ watch: definition });
@@ -216,10 +224,13 @@ export default function watchExtension(pi: ExtensionAPI) {
 			"A clean exit (code 0) is silent; on_finish=true requests one \"finished\" notification with recent output; " +
 			"any other exit or signal is reported once as \"broke\" and the script restarts with backoff. " +
 			"There is no watch-level polling: the script owns its own cadence. Scripts get a private state directory in $WATCH_STATE. " +
+			"max_events is an optional lifetime cap on matching stdout events; reaching it delivers the final batch and stops without an extra finish notification. " +
 			`${DECISION_RULE}\n${STREAM_EXAMPLE}`,
 		promptSnippet: "Create a durable stream watch: runs a listener command once, notifies per matching stdout line",
 		promptGuidelines: [
 			"Use watch_create_stream for push-style sources (tail -f, journalctl -f, inotify waiters, socket listeners) or when the command announces events as they happen.",
+			USAGE_GUIDANCE,
+			"For a one-shot stream alert, set max_events=1: the first matching stdout line is delivered, then the watch stops automatically.",
 			`Use watch_create_poll for quick yes/no checks instead; ${DECISION_RULE}`,
 			"Only stdout can notify; use stderr for diagnostics you want logged but never delivered.",
 		],
@@ -229,6 +240,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 			run: Type.String({ description: "Listener command, run once via bash -c; expected to run long" }),
 			match: Type.Optional(Type.String({ description: "Regular expression; matching stdout lines become notifications (default: every non-empty line)" })),
 			on_finish: Type.Optional(Type.Boolean({ description: "Notify once when the script exits cleanly (default false: clean exit is silent)" })),
+			max_events: Type.Optional(Type.Number({ description: "Lifetime number of matching stdout alerts before stopping; integer >= 1, default unlimited. Set 1 for a one-shot alert" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 		guardConflicts();
@@ -239,6 +251,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 					run: params.run,
 					match: params.match,
 					onFinish: params.on_finish,
+					maxEvents: params.max_events,
 					sessionId: ctx.sessionManager.getSessionId(),
 				});
 				return toolResult({ watch: definition });
@@ -267,6 +280,8 @@ export default function watchExtension(pi: ExtensionAPI) {
 					every_seconds: definition.every_seconds ?? null,
 					match: definition.match ?? null,
 					on_finish: definition.on_finish ?? false,
+					max_events: definition.max_events ?? null,
+					event_count: state.event_count,
 					broken: state.broken,
 					pid: state.pid,
 					exit_code: state.exit_code,
@@ -316,7 +331,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "watch_resume",
 		label: "Resume watch",
-		description: "Resume a paused or stopped watch: restart its script and scheduling.",
+		description: "Resume a paused or stopped watch: restart its script and scheduling. A watch that exhausted max_events cannot be resumed; create a new watch to re-arm it.",
 		executionMode: "sequential",
 		parameters: Type.Object({
 			name: Type.String({ description: "Watch name" }),
