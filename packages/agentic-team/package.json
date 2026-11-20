@@ -1,0 +1,29 @@
+{
+  "name": "pi-agentic-team",
+  "version": "0.1.0",
+  "description": "Filesystem-backed team registration and messaging for Pi agents",
+  "private": true,
+  "type": "module",
+  "keywords": ["pi-package"],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@types/node": "^22.0.0",
+    "typebox": "1.3.27",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
