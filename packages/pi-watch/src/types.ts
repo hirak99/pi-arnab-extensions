@@ -20,6 +20,8 @@ export interface WatchDefinition {
 	on_finish?: boolean | undefined;
 	/** Poll mode only: seconds before a single run is killed. */
 	timeout_seconds: number;
+	/** Poll mode only: seconds before the very first run; default 0 (fire immediately). */
+	initial_delay_seconds?: number | undefined;
 	/** Pi session that receives notifications. */
 	session_id: string;
 	created_at: string;
@@ -35,6 +37,10 @@ export interface WatchRuntimeState {
 	restart_attempt: number;
 	/** ISO timestamp of the next scheduled action (poll tick or stream restart). */
 	next_run_at: string | null;
+	/** Total notifications delivered for this watch. */
+	event_count: number;
+	/** ISO timestamp of the last delivered event, or null if never fired. */
+	last_fired_at: string | null;
 }
 
 export function initialRuntimeState(status: WatchStatus = "stopped"): WatchRuntimeState {
@@ -46,6 +52,8 @@ export function initialRuntimeState(status: WatchStatus = "stopped"): WatchRunti
 		broken: false,
 		restart_attempt: 0,
 		next_run_at: null,
+		event_count: 0,
+		last_fired_at: null,
 	};
 }
 

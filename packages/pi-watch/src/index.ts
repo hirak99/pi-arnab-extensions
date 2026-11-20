@@ -145,6 +145,8 @@ export default function watchExtension(pi: ExtensionAPI) {
 			"The command must finish quickly: exit 0 = silence (no tokens spent), exit 1 = one notification with the command's combined output, " +
 			"any other exit, signal, or watchdog timeout = a \"broke\" notification (reported once per breakage). " +
 			`Runs at most every ${MIN_EVERY_SECONDS} seconds (default ${DEFAULT_EVERY_SECONDS}); a single run is killed after timeout_seconds (default ${DEFAULT_TIMEOUT_SECONDS}). ` +
+			"initial_delay_seconds postpones the very first run (default 0 = run immediately, which establishes the change-detection baseline). " +
+			"Every fired notification ends with a stats footer: its sequence number and the time since the previous event. " +
 			`Scripts get a private state directory in $WATCH_STATE (cursor files survive restarts). ${DECISION_RULE}\n${POLL_EXAMPLE}`,
 		promptSnippet: "Create a durable poll watch: re-runs a check command, notifies when its exit code is non-zero",
 		promptGuidelines: [
@@ -158,6 +160,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 			name: Type.String({ description: "Unique watch name (no '/')" }),
 			run: Type.String({ description: "Check command, run via bash -c; must exit quickly" }),
 			every_seconds: Type.Optional(Type.Number({ description: `Seconds between runs; integer >= ${MIN_EVERY_SECONDS}, default ${DEFAULT_EVERY_SECONDS}` })),
+			initial_delay_seconds: Type.Optional(Type.Number({ description: "Seconds before the very first run; default 0 (immediate). Use to avoid firing right after registration." })),
 			timeout_seconds: Type.Optional(Type.Number({ description: `Seconds before one run is killed; default ${DEFAULT_TIMEOUT_SECONDS}` })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -168,6 +171,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 					mode: "poll",
 					run: params.run,
 					everySeconds: params.every_seconds,
+					initialDelaySeconds: params.initial_delay_seconds,
 					timeoutSeconds: params.timeout_seconds,
 					sessionId: ctx.sessionManager.getSessionId(),
 				});

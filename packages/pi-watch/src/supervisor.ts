@@ -6,8 +6,9 @@ import { createInterface, type Interface } from "node:readline";
 import type { WatchRegistry } from "./registry.ts";
 import {
 	brokeBody,
-	formatCoalesced,
+	eventFooter,
 	finishedBody,
+	formatCoalesced,
 	truncateBody,
 } from "./format.ts";
 import {
@@ -84,7 +85,8 @@ export class WatchSupervisor {
 	async restore(): Promise<WatchDefinition[]> {
 		const definitions = await this.registry.listDefinitions();
 		for (const definition of definitions) {
-			const state = (await this.registry.loadState(definition.id)) ?? initialRuntimeState("stopped");
+			const loaded = await this.registry.loadState(definition.id);
+			const state = loaded ? { ...initialRuntimeState("stopped"), ...loaded } : initialRuntimeState("stopped");
 			state.status = "stopped";
 			state.pid = null;
 			state.next_run_at = null;
@@ -99,6 +101,7 @@ export class WatchSupervisor {
 		mode: WatchMode;
 		run: string;
 		everySeconds?: number | undefined;
+		initialDelaySeconds?: number | undefined;
 		match?: string | undefined;
 		onFinish?: boolean | undefined;
 		timeoutSeconds?: number | undefined;
@@ -131,6 +134,10 @@ export class WatchSupervisor {
 		if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1) {
 			throw new WatchError("timeout_seconds must be an integer of at least 1");
 		}
+		const initialDelaySeconds = input.initialDelaySeconds ?? 0;
+		if (!Number.isInteger(initialDelaySeconds) || initialDelaySeconds < 0) {
+			throw new WatchError("initial_delay_seconds must be an integer of at least 0");
+		}
 		const id = randomUUID();
 		const definition: WatchDefinition = {
 			id,
@@ -138,6 +145,7 @@ export class WatchSupervisor {
 			mode: input.mode,
 			run: input.run,
 			...(input.mode === "poll" ? { every_seconds: input.everySeconds ?? DEFAULT_EVERY_SECONDS } : {}),
+			...(input.mode === "poll" && initialDelaySeconds > 0 ? { initial_delay_seconds: initialDelaySeconds } : {}),
 			...(match !== undefined ? { match } : {}),
 			...(input.mode === "stream" && input.onFinish ? { on_finish: true } : {}),
 			timeout_seconds: timeoutSeconds,
@@ -149,7 +157,17 @@ export class WatchSupervisor {
 		const entry = this.newEntry(definition, initialRuntimeState("running"));
 		this.entries.set(definition.id, entry);
 		await this.registry.appendLog(definition.id, `[status]: created (${definition.mode} mode)`);
-		void this.startEntry(entry);
+		const initialDelayMs = definition.initial_delay_seconds ? definition.initial_delay_seconds * 1000 : 0;
+		if (initialDelayMs > 0) {
+			entry.state.next_run_at = new Date(Date.now() + initialDelayMs).toISOString();
+			await this.registry.saveState(definition.id, entry.state);
+			entry.timer = setTimeout(() => {
+				entry.state.next_run_at = null;
+				void this.pollTick(entry);
+			}, initialDelayMs);
+		} else {
+			void this.startEntry(entry);
+		}
 		return definition;
 	}
 
@@ -467,12 +485,21 @@ export class WatchSupervisor {
 		const lines = [...entry.pendingLines];
 		entry.pendingCount = 0;
 		entry.pendingLines = [];
-		entry.lastDeliverAt = Date.now();
+		const now = Date.now();
+		entry.lastDeliverAt = now;
 		const definition = entry.definition;
+		// Sequence stats: this batch's position and the gap since the previous
+		// event, appended as a compact footer to every fired notification.
+		const previousCount = entry.state.event_count ?? 0;
+		const sinceMs = entry.state.last_fired_at ? now - Date.parse(entry.state.last_fired_at) : null;
+		entry.state.event_count = previousCount + count;
+		entry.state.last_fired_at = new Date(now).toISOString();
+		void this.registry.saveState(definition.id, entry.state);
 		const body = count === 1
 			? truncateBody(lines[0] ?? "", MAX_EVENT_BODY_CHARS)
 			: formatCoalesced(definition, { total: count, lines });
-		await this.deliverSafely(entry, body.startsWith(`Watch `) ? body : `Watch "${definition.name}" fired:\n\n${body}`);
+		const wrapped = body.startsWith(`Watch `) ? body : `Watch "${definition.name}" fired:\n\n${body}`;
+		await this.deliverSafely(entry, `${wrapped}\n\n${eventFooter(previousCount + 1, previousCount + count, sinceMs)}`);
 	}
 
 	private async deliverSafely(entry: WatchEntry, body: string): Promise<void> {

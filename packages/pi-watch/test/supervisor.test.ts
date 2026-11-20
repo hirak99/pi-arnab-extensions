@@ -52,7 +52,9 @@ test("poll: exit 1 with output delivers one notification; exit 0 stays silent", 
 	});
 	await waitFor(() => events.length >= 2, "two poll events");
 	await delay(1200);
-	assert.deepEqual(events, ['Watch "poll-event" fired:\n\ncount is 0', 'Watch "poll-event" fired:\n\ncount is 1']);
+	assert.equal(events.length, 2, "exit 0 after two events stays silent");
+	assert.match(events[0]!, /Watch "poll-event" fired:\n\ncount is 0\n\n— event #1 for this watch · \(first fire\)/);
+	assert.match(events[1]!, /Watch "poll-event" fired:\n\ncount is 1\n\n— event #2 for this watch · \d+s since previous event/);
 });
 
 test("poll: bare non-zero exit (false) fires a timestamped notification", async (t) => {
@@ -60,6 +62,7 @@ test("poll: bare non-zero exit (false) fires a timestamped notification", async 
 	await supervisor.create({ name: "tick", mode: "poll", run: "false", everySeconds: 1, sessionId: SESSION });
 	await waitFor(() => events.length >= 1, "periodic fire");
 	assert.match(events[0]!, /^Watch "tick" fired:\n\nfired at /);
+	assert.match(events[0]!, /— event #1 for this watch · \(first fire\)$/);
 });
 
 test("poll: crash notifies broke once, then recovered on next success", async (t) => {
@@ -89,7 +92,8 @@ test("stream: every non-empty stdout line notifies; match filters; stderr never 
 	});
 	await waitFor(() => events.length >= 1, "stream event");
 	await delay(300);
-	assert.deepEqual(events, ['Watch "lines" fired:\n\nNOTIFY second']);
+	assert.equal(events.length, 1);
+	assert.match(events[0]!, /^Watch "lines" fired:\n\nNOTIFY second\n\n— event #1 for this watch · \(first fire\)$/);
 });
 
 test("stream: clean exit is silent by default; on_finish notifies once", async (t) => {
@@ -144,6 +148,7 @@ test("rate floor coalesces: last 3 lines plus suppression trailer", async (t) =>
 	assert.match(events[0]!, /5 events \(rate-limited\)/);
 	assert.match(events[0]!, /\[3\] event 5/);
 	assert.match(events[0]!, /2 notifications before this not shown; use watch_tail/);
+	assert.match(events[0]!, /— events #1–5 for this watch · \(first fire\)$/);
 });
 
 test("watch lifecycle: pause stops events, resume restarts, remove deletes definition", async (t) => {
@@ -179,6 +184,27 @@ test("watch_tail log captures [stdout]/[stderr] lines and status trailer input",
 	assert.ok(lines.some((line) => line === "[stdout]: out-line"));
 	assert.ok(lines.some((line) => line === "[stderr]: err-line"));
 	assert.ok(lines.some((line) => line === "[status]: script exited with code 3"));
+});
+
+test("initial_delay_seconds postpones the first run only", async (t) => {
+	const { supervisor, events } = await withSupervisor(t);
+	await supervisor.create({
+		name: "delayed",
+		mode: "poll",
+		run: "echo early; exit 1",
+		everySeconds: 1,
+		initialDelaySeconds: 1,
+		sessionId: SESSION,
+	});
+	await delay(400);
+	assert.deepEqual(events, [], "no fire before the initial delay elapses");
+	await waitFor(() => events.length >= 1, "fire after initial delay");
+	assert.match(events[0]!, /early/);
+	await waitFor(() => events.length >= 2, "steady cadence continues after the delay");
+	assert.match(events[1]!, /— event #2 for this watch/);
+	const { state } = supervisor.get("delayed");
+	assert.equal(state.event_count >= 2, true);
+	assert.notEqual(state.last_fired_at, null);
 });
 
 test("creation validates names, intervals, and match regex", async (t) => {

@@ -70,6 +70,18 @@ export function senderIdentity(watch: WatchDefinition): { name: string } {
 	return { name: `watch "${watch.name}" (${watch.mode})` };
 }
 
+/**
+ * Stats footer appended to every fired-event notification: where this event
+ * sits in the watch's sequence and how long since the previous one.
+ */
+export function eventFooter(first: number, last: number, sinceMs: number | null): string {
+	const range = first === last ? `event #${first}` : `events #${first}–${last}`;
+	const since = sinceMs === null
+		? "(first fire)"
+		: `${Math.round(sinceMs / 1000)}s since previous ${first === last ? "event" : "delivery"}`;
+	return `— ${range} for this watch · ${since}`;
+}
+
 export function describeMessage(message: Message): string {
 	return message.metadata.id;
 }
