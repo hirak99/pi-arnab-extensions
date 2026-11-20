@@ -1,0 +1,18 @@
+{
+  "name": "pi-arnab-extensions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "keywords": ["pi-package"],
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "npm run build --workspace=pi-discord-remote",
+    "check": "npm run check --workspace=pi-discord-remote && npm test --workspace=pi-discord-remote && npm run check --workspace=pi-agentic-team"
+  },
+  "pi": {
+    "extensions": [
+      "./packages/discord-remote/dist",
+      "./packages/agentic-team/src/index.ts"
+    ]
+  }
+}
