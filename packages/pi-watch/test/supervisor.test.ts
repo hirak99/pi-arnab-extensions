@@ -154,7 +154,7 @@ test("rate floor coalesces: last 3 lines plus suppression trailer", async (t) =>
 	assert.match(events[0]!, /— events #1–5 for this watch · \(first fire\)$/);
 });
 
-test("poll: max_events=1 delivers one alert, persists exhaustion, and prevents resume", async (t) => {
+test("poll: max_events=1 delivers one alert and automatically removes the watch", async (t) => {
 	const { supervisor, events, root } = await withSupervisor(t);
 	const definition = await supervisor.create({
 		name: "once-poll",
@@ -165,20 +165,22 @@ test("poll: max_events=1 delivers one alert, persists exhaustion, and prevents r
 		sessionId: SESSION,
 	});
 	await waitFor(() => events.length >= 1, "one-shot poll event");
-	await waitFor(() => supervisor.get("once-poll", SESSION).state.status === "stopped", "automatic stop");
+	await waitFor(() => supervisor.getById(definition.id) === undefined, "automatic removal");
+	const registry = new WatchRegistry(root);
+	await waitFor(async () => (await registry.readLogTail(definition.id, 50)).some((line) => line.includes("watch removed")), "removal log");
 	await delay(1200);
 	assert.equal(events.length, 1);
 	assert.match(events[0]!, /only-once/);
-	assert.equal(supervisor.get("once-poll", SESSION).state.event_count, 1);
-	await assert.rejects(() => supervisor.resume("once-poll", SESSION), /max_events=1/);
-	const persisted = await new WatchRegistry(root).loadState(definition.id);
-	assert.equal(persisted?.event_count, 1);
-	assert.equal(persisted?.status, "stopped");
+	assert.match(events[0]!, /max_events=1 reached; watch stopped and removed/);
+	assert.throws(() => supervisor.get("once-poll", SESSION), WatchError);
+	await assert.rejects(() => supervisor.resume("once-poll", SESSION), /no watch named/);
+	assert.equal(await registry.loadState(definition.id), undefined);
+	assert.deepEqual(await registry.listDefinitions(), []);
 });
 
 test("stream: max_events=1 delivers only the first match and suppresses on_finish", async (t) => {
 	const { supervisor, events } = await withSupervisor(t);
-	await supervisor.create({
+	const definition = await supervisor.create({
 		name: "once-stream",
 		mode: "stream",
 		run: "echo first; echo second; exit 0",
@@ -187,17 +189,34 @@ test("stream: max_events=1 delivers only the first match and suppresses on_finis
 		sessionId: SESSION,
 	});
 	await waitFor(() => events.length >= 1, "one-shot stream event");
-	await waitFor(() => supervisor.get("once-stream", SESSION).state.status === "stopped", "automatic stop");
+	await waitFor(() => supervisor.getById(definition.id) === undefined, "automatic removal");
 	await delay(100);
 	assert.equal(events.length, 1);
 	assert.match(events[0]!, /first/);
+	assert.match(events[0]!, /watch stopped and removed/);
 	assert.doesNotMatch(events[0]!, /second|finished/);
-	assert.equal(supervisor.get("once-stream", SESSION).state.event_count, 1);
+	assert.throws(() => supervisor.get("once-stream", SESSION), WatchError);
+});
+
+test("stream: capped truncated output does not point at removed watch_tail state", async (t) => {
+	const { supervisor, events } = await withSupervisor(t);
+	const definition = await supervisor.create({
+		name: "once-large",
+		mode: "stream",
+		run: "printf '%2100s' x | tr ' ' x",
+		maxEvents: 1,
+		sessionId: SESSION,
+	});
+	await waitFor(() => events.length >= 1, "truncated one-shot event");
+	await waitFor(() => supervisor.getById(definition.id) === undefined, "automatic removal");
+	assert.match(events[0]!, /… \(truncated\)/);
+	assert.match(events[0]!, /watch stopped and removed/);
+	assert.doesNotMatch(events[0]!, /watch_tail/);
 });
 
 test("stream: max_events counts source events and flushes a coalesced final batch", async (t) => {
 	const { supervisor, events } = await withSupervisor(t, { eventRateFloorMs: 60_000 });
-	await supervisor.create({
+	const definition = await supervisor.create({
 		name: "finite-burst",
 		mode: "stream",
 		run: "for i in 1 2 3 4; do echo \"event $i\"; done; sleep 1",
@@ -205,12 +224,12 @@ test("stream: max_events counts source events and flushes a coalesced final batc
 		sessionId: SESSION,
 	});
 	await waitFor(() => events.length >= 1, "final coalesced event");
-	await waitFor(() => supervisor.get("finite-burst", SESSION).state.status === "stopped", "automatic stop");
+	await waitFor(() => supervisor.getById(definition.id) === undefined, "automatic removal");
 	assert.equal(events.length, 1);
 	assert.match(events[0]!, /3 events \(rate-limited\)/);
 	assert.match(events[0]!, /events #1–3/);
-	assert.doesNotMatch(events[0]!, /event 4/);
-	assert.equal(supervisor.get("finite-burst", SESSION).state.event_count, 3);
+	assert.match(events[0]!, /max_events=3 reached; watch stopped and removed/);
+	assert.doesNotMatch(events[0]!, /event 4|watch_tail/);
 });
 
 test("watch lifecycle: pause stops events, resume restarts, remove deletes definition", async (t) => {

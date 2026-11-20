@@ -498,9 +498,9 @@ export class WatchSupervisor {
 			// Mark this as an intentional stop before awaiting delivery so a
 			// concurrently exiting stream cannot emit an extra on_finish notice.
 			entry.intentionalStop = true;
-			await this.flushPending(entry);
-			await this.stopEntry(entry, "stopped");
-			await this.registry.appendLog(entry.definition.id, `[status]: max_events=${maxEvents} reached`);
+			await this.flushPending(entry, true);
+			await this.remove(entry.definition.name, entry.definition.session_id);
+			await this.registry.appendLog(entry.definition.id, `[status]: max_events=${maxEvents} reached; watch removed`);
 			return;
 		}
 		if (entry.flushTimer) return;
@@ -514,7 +514,7 @@ export class WatchSupervisor {
 		}, wait);
 	}
 
-	private async flushPending(entry: WatchEntry): Promise<void> {
+	private async flushPending(entry: WatchEntry, cappedFinal = false): Promise<void> {
 		if (entry.flushTimer) clearTimeout(entry.flushTimer);
 		entry.flushTimer = null;
 		if (entry.pendingCount === 0) return;
@@ -533,10 +533,11 @@ export class WatchSupervisor {
 		entry.state.last_fired_at = new Date(now).toISOString();
 		void this.registry.saveState(definition.id, entry.state);
 		const body = count === 1
-			? truncateBody(lines[0] ?? "", MAX_EVENT_BODY_CHARS)
-			: formatCoalesced(definition, { total: count, lines });
+			? truncateBody(lines[0] ?? "", MAX_EVENT_BODY_CHARS, !cappedFinal)
+			: formatCoalesced(definition, { total: count, lines }, !cappedFinal);
 		const wrapped = body.startsWith(`Watch `) ? body : `Watch "${definition.name}" fired:\n\n${body}`;
-		await this.deliverSafely(entry, `${wrapped}\n\n${eventFooter(previousCount + 1, previousCount + count, sinceMs)}`);
+		const capNotice = cappedFinal ? `\n\nmax_events=${definition.max_events} reached; watch stopped and removed.` : "";
+		await this.deliverSafely(entry, `${wrapped}${capNotice}\n\n${eventFooter(previousCount + 1, previousCount + count, sinceMs)}`);
 	}
 
 	private async deliverSafely(entry: WatchEntry, body: string): Promise<void> {

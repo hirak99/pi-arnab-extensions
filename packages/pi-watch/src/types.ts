@@ -18,7 +18,7 @@ export interface WatchDefinition {
 	match?: string | undefined;
 	/** Stream mode only: notify when the script exits cleanly. */
 	on_finish?: boolean | undefined;
-	/** Optional lifetime cap on source alert events; reaching it stops the watch. */
+	/** Optional lifetime cap on source alert events; reaching it removes the watch. */
 	max_events?: number | undefined;
 	/** Poll mode only: seconds before a single run is killed. */
 	timeout_seconds: number;
@@ -39,7 +39,7 @@ export interface WatchRuntimeState {
 	restart_attempt: number;
 	/** ISO timestamp of the next scheduled action (poll tick or stream restart). */
 	next_run_at: string | null;
-	/** Total notifications delivered for this watch. */
+	/** Total source alert events observed, including events coalesced into one notification. */
 	event_count: number;
 	/** ISO timestamp of the last delivered event, or null if never fired. */
 	last_fired_at: string | null;

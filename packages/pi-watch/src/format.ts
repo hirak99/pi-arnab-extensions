@@ -15,7 +15,7 @@ export function formatReference(watch: WatchDefinition): string {
 /** watch_tail trailer: one bracketed line describing live state. */
 export function statusLine(state: WatchRuntimeState): string {
 	if (state.status === "paused") return "[status]: watch is paused";
-	if (state.status === "stopped") return "[status]: watch is stopped (resume to run again; recreate if its event limit is exhausted)";
+	if (state.status === "stopped") return "[status]: watch is stopped (resume to run again)";
 	if (state.pid !== null) return "[status]: script is still running";
 	if (state.exit_signal) return `[status]: script exited with signal ${state.exit_signal}`;
 	if (state.exit_code !== null) return `[status]: script exited with code ${state.exit_code}`;
@@ -32,21 +32,24 @@ export interface CoalescedBatch {
 
 /**
  * Body for a rate-limited notification: the last few event lines plus an
- * explicit suppression trailer pointing at watch_tail.
+ * explicit suppression trailer, pointing at watch_tail while it remains available.
  */
-export function formatCoalesced(watch: WatchDefinition, batch: CoalescedBatch): string {
+export function formatCoalesced(watch: WatchDefinition, batch: CoalescedBatch, tailAvailable = true): string {
 	const header = `Watch "${watch.name}": ${batch.total} events (rate-limited):`;
 	const lines = batch.lines.map((line, index) => `[${index + 1}] ${line}`);
 	const hidden = batch.total - batch.lines.length;
-	const trailer = hidden > 0
-		? `${hidden} notifications before this not shown; use watch_tail with name "${watch.name}" for the full list.`
-		: `Use watch_tail with name "${watch.name}" for the full list.`;
-	return [header, ...lines, trailer].join("\n");
+	const trailer = !tailAvailable
+		? hidden > 0 ? `${hidden} earlier events omitted from this notification.` : undefined
+		: hidden > 0
+			? `${hidden} notifications before this not shown; use watch_tail with name "${watch.name}" for the full list.`
+			: `Use watch_tail with name "${watch.name}" for the full list.`;
+	return [header, ...lines, ...(trailer ? [trailer] : [])].join("\n");
 }
 
-export function truncateBody(body: string, maxChars: number): string {
+export function truncateBody(body: string, maxChars: number, tailAvailable = true): string {
 	if (body.length <= maxChars) return body;
-	return `${body.slice(0, maxChars)}\n… (truncated; use watch_tail for full output)`;
+	const suffix = tailAvailable ? "; use watch_tail for full output" : "";
+	return `${body.slice(0, maxChars)}\n… (truncated${suffix})`;
 }
 
 export function exitDescription(code: number | null, signal: string | null): string {

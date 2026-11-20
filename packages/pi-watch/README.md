@@ -36,9 +36,10 @@ Semantics:
   one-time work. For a one-shot watch alert, set `max_events=1` explicitly.
 - `max_events` is an optional lifetime cap on source alert events: exit-1 poll
   alerts or matching stream stdout lines, not coalesced deliveries. Reaching it
-  flushes the final notification batch and stops the watch without an extra
-  `on_finish` notice. The definition and logs remain available; pause/resume
-  does not reset the budget, and an exhausted watch must be recreated to re-arm.
+  flushes the final notification batch and automatically removes the watch
+  without an extra `on_finish` notice. Logs and script state remain on disk for
+  forensics. Pause/resume does not reset the budget; create a new watch after
+  automatic removal to re-arm.
 - Deliveries are rate-limited (15s floor per watch plus a short grace window
   so bursts coalesce); a rate-limited notification shows the last 3 event
   lines and a "N notifications before this not shown; use watch_tail"
