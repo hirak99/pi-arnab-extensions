@@ -171,6 +171,33 @@ describe("Discord client reload handoff", () => {
     expect(client.destroy).toHaveBeenCalledOnce();
   });
 
+  it("forces a reconnect when the bridged client is not ready after reload", async () => {
+    vi.useFakeTimers();
+    try {
+      const first = createHarness();
+      await first.start({ cwd: "/test-project", ui: makeUi() });
+      const before = discord.instances.length;
+      const client = discord.instances[before - 1];
+      client.isReady.mockReturnValue(false);
+
+      await first.emit("session_shutdown", { reason: "reload" });
+
+      const second = createHarness();
+      await second.emit("session_start", { reason: "reload" }, { cwd: "/test-project", ui: makeUi() });
+      expect(discord.instances).toHaveLength(before);
+
+      // Grace period elapses; the unhealthy bridged client must be replaced.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(discord.instances).toHaveLength(before);
+      await vi.advanceTimersByTimeAsync(3_100); // first reconnect delay (2s + jitter < 1s)
+      expect(client.destroy).toHaveBeenCalled();
+      expect(discord.instances).toHaveLength(before + 1);
+      expect(discord.instances[before].login).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("includes Discord mention tokens unless the user is configured with null", async () => {
     vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({
       token: "test-token",

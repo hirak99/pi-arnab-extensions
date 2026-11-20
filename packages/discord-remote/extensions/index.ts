@@ -58,6 +58,9 @@ import {
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 60_000;
 const RECONNECT_MAX_ATTEMPTS = 10;
+/** Grace before checking a bridged (reload-surviving) client's liveness, so an
+ * in-flight login is not destroyed prematurely. */
+const RELOAD_LIVENESS_GRACE_MS = 5_000;
 
 interface ReloadBridge {
   client: Client;
@@ -117,6 +120,14 @@ export default function (pi: ExtensionAPI) {
   // Captured at connect time so reconnect can reuse them
   let connectNotify: ((msg: string, level: "success" | "error" | "warning" | "info") => void) | null = null;
   let connectSetStatus: ((key: string, val: string | undefined) => void) | null = null;
+  let reloadLivenessTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearReloadLivenessTimer(): void {
+    if (reloadLivenessTimer) {
+      clearTimeout(reloadLivenessTimer);
+      reloadLivenessTimer = null;
+    }
+  }
 
   // ── Question-answering state (for overriding ask_user_question) ────────
   let questionResolver: ((answer: string) => void) | null = null;
@@ -830,6 +841,21 @@ export default function (pi: ExtensionAPI) {
         attachClientHandlers(client);
         const channelLabel = runtime.sessionChannelName ?? runtime.activeChannelId ?? "unknown";
         connectSetStatus("pi-discord-remote", `🔌 Discord: #${channelLabel}`);
+        // The bridged socket may have died during the reload window (or a
+        // reconnect may already have failed before it). Give an in-flight
+        // login a grace period, then verify liveness and force a reconnect
+        // if unhealthy — otherwise a dead socket would look connected
+        // forever and Discord would silently stop working.
+        const bridged = client;
+        reloadLivenessTimer = setTimeout(() => {
+          reloadLivenessTimer = null;
+          if (client !== bridged || isShuttingDown) return;
+          if (!client.isReady()) {
+            console.error("[pi-discord-remote] Bridged Discord client not ready after reload; reconnecting…");
+            connectNotify?.("Discord client unhealthy after reload; reconnecting…", "warning");
+            scheduleReconnect();
+          }
+        }, RELOAD_LIVENESS_GRACE_MS);
       }
       return;
     }
@@ -1079,6 +1105,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (event: any) => {
     stopDiscordTyping();
+    clearReloadLivenessTimer();
     // Reject any pending question so tool execution doesn't hang
     if (questionRejecter) {
       questionRejecter(new Error("Session shut down"));
@@ -1090,17 +1117,25 @@ export default function (pi: ExtensionAPI) {
     for (const settle of [...pendingBackgroundStatusRequests.values()]) settle(undefined);
     clearReconnectTimer();
     isShuttingDown = true;
-    // Hand the live client to the replacement runtime. Keeping old listeners
-    // would retain stale pi/ctx objects and crash on the next Discord event.
+    // Hand the live client to the replacement runtime. Build the bridge
+    // BEFORE stripping listeners so a failure here can still fall back to
+    // destroying the client — never leave a listenerless zombie socket.
     if (event?.reason === "reload") {
       if (client) {
-        client.removeAllListeners();
-        reloadBridge = {
-          client,
-          config: activeConfig!,
-          activeChannelId: runtime.activeChannelId,
-          sessionChannelName: runtime.sessionChannelName,
-        };
+        if (!activeConfig) {
+          // Invariant violation: a client without its config cannot be handed
+          // off or safely re-adopted. Destroy it instead.
+          console.error("[pi-discord-remote] Client alive without config during reload; destroying it");
+          await client.destroy().catch(() => {});
+        } else {
+          reloadBridge = {
+            client,
+            config: activeConfig,
+            activeChannelId: runtime.activeChannelId,
+            sessionChannelName: runtime.sessionChannelName,
+          };
+          client.removeAllListeners();
+        }
         client = null;
         activeConfig = null;
         runtime.activeChannelId = null;
