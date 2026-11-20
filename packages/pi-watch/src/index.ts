@@ -8,6 +8,7 @@ import { InboxDelivery, MessageStore } from "pi-durable-inbox";
 import { senderIdentity, statusLine } from "./format.ts";
 import { WatchRegistry } from "./registry.ts";
 import { registerWatchStatusApi } from "./status-api.ts";
+import { formatWatcherStatus } from "./status.ts";
 import { WatchSupervisor, WatchError } from "./supervisor.ts";
 import {
 	DEFAULT_EVERY_SECONDS,
@@ -67,10 +68,11 @@ export default function watchExtension(pi: ExtensionAPI) {
 	const outbox = new MessageStore(join(root, "outbox"));
 	const supervisor = new WatchSupervisor(registry, async (watch, body) => {
 		await outbox.sendDirect({ from: `watch:${watch.id}`, to: watch.session_id, body });
-	});
+	}, { onStateChange: () => refreshWatchStatus() });
 	let statusApiUnsub: (() => void) | undefined = registerWatchStatusApi(pi, () => supervisor.list(owningSessionId()));
 	let delivery: InboxDelivery | undefined;
 	let sessionId: string | undefined;
+	let statusUi: ExtensionContext["ui"] | undefined;
 	// Set in session_start if another extension owns one of our tool names.
 	// Every tool call refuses to run, loudly, instead of silently executing a
 	// shadowing foreign tool.
@@ -83,6 +85,11 @@ export default function watchExtension(pi: ExtensionAPI) {
 	function owningSessionId(): string {
 		if (!sessionId) throw new WatchError("watch session is not initialized");
 		return sessionId;
+	}
+
+	function refreshWatchStatus(): void {
+		if (!statusUi || !sessionId) return;
+		statusUi.setStatus("pi-watch", formatWatcherStatus(supervisor.list(sessionId)));
 	}
 
 	async function startDelivery(ctx: ExtensionContext): Promise<void> {
@@ -117,6 +124,9 @@ export default function watchExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		statusUi?.setStatus("pi-watch", undefined);
+		statusUi = undefined;
+		sessionId = undefined;
 		// Loud collision guard, deferred past extension loading (action methods
 		// like getAllTools are not allowed while extensions load): every
 		// watch_* tool must be ours; if another extension shadowed one, all
@@ -136,9 +146,14 @@ export default function watchExtension(pi: ExtensionAPI) {
 		delivery = undefined;
 		await supervisor.restore();
 		await startDelivery(ctx);
+		statusUi = ctx.hasUI ? ctx.ui : undefined;
+		refreshWatchStatus();
 	});
 
 	pi.on("session_shutdown", async () => {
+		statusUi?.setStatus("pi-watch", undefined);
+		statusUi = undefined;
+		sessionId = undefined;
 		statusApiUnsub?.();
 		statusApiUnsub = undefined;
 		await supervisor.shutdown();

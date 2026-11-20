@@ -55,6 +55,8 @@ interface SupervisorOptions {
 	streamBackoffMaxMs?: number;
 	/** Test hook: lower bound for every_seconds validation. */
 	minEverySeconds?: number;
+	/** Called after watch visibility, active state, or broken state changes. */
+	onStateChange?: () => void;
 }
 
 /**
@@ -69,6 +71,7 @@ export class WatchSupervisor {
 	private readonly streamBackoffBaseMs: number;
 	private readonly streamBackoffMaxMs: number;
 	private readonly minEverySeconds: number;
+	private readonly onStateChange: (() => void) | undefined;
 	private readonly entries = new Map<string, WatchEntry>();
 
 	constructor(registry: WatchRegistry, deliver: Deliver, options: SupervisorOptions = {}) {
@@ -79,6 +82,7 @@ export class WatchSupervisor {
 		this.streamBackoffBaseMs = options.streamBackoffBaseMs ?? STREAM_BACKOFF_BASE_MS;
 		this.streamBackoffMaxMs = options.streamBackoffMaxMs ?? STREAM_BACKOFF_MAX_MS;
 		this.minEverySeconds = options.minEverySeconds ?? MIN_EVERY_SECONDS;
+		this.onStateChange = options.onStateChange;
 	}
 
 	/** Called on session start: load definitions from disk, all stopped (v1: no auto-resume). */
@@ -93,6 +97,7 @@ export class WatchSupervisor {
 			this.entries.set(definition.id, this.newEntry(definition, state));
 			await this.registry.saveState(definition.id, state);
 		}
+		this.onStateChange?.();
 		return definitions;
 	}
 
@@ -156,6 +161,7 @@ export class WatchSupervisor {
 		await mkdir(this.registry.scriptStatePath(definition.id), { recursive: true, mode: 0o700 });
 		const entry = this.newEntry(definition, initialRuntimeState("running"));
 		this.entries.set(definition.id, entry);
+		this.onStateChange?.();
 		await this.registry.appendLog(definition.id, `[status]: created (${definition.mode} mode)`);
 		const initialDelayMs = definition.initial_delay_seconds ? definition.initial_delay_seconds * 1000 : 0;
 		if (initialDelayMs > 0) {
@@ -201,6 +207,7 @@ export class WatchSupervisor {
 		entry.state.status = "running";
 		entry.state.broken = false;
 		await this.registry.saveState(entry.definition.id, entry.state);
+		this.onStateChange?.();
 		await this.registry.appendLog(entry.definition.id, "[status]: resumed");
 		void this.startEntry(entry);
 	}
@@ -209,6 +216,7 @@ export class WatchSupervisor {
 		const entry = this.byName(name, sessionId);
 		await this.stopEntry(entry, "stopped");
 		this.entries.delete(entry.definition.id);
+		this.onStateChange?.();
 		await this.registry.remove(entry.definition.id);
 	}
 
@@ -331,7 +339,9 @@ export class WatchSupervisor {
 		if (wasBroken) {
 			entry.streamAttempt = 0;
 			entry.state.restart_attempt = 0;
+			entry.state.broken = false;
 			await this.registry.saveState(definition.id, entry.state);
+			this.onStateChange?.();
 			await this.deliverSafely(entry, `Watch "${definition.name}": recovered (script restarted successfully).`);
 		}
 	}
@@ -351,7 +361,9 @@ export class WatchSupervisor {
 			entry.streamAttempt = 0;
 			entry.state.restart_attempt = 0;
 			entry.state.broken = false;
+			entry.state.status = "stopped";
 			await this.registry.saveState(definition.id, entry.state);
+			this.onStateChange?.();
 			if (definition.on_finish) {
 				await this.deliverSafely(entry, finishedBody(definition, await this.registry.readLogTail(definition.id, 10)));
 			}
@@ -434,6 +446,7 @@ export class WatchSupervisor {
 		entry.state.next_run_at = null;
 		await this.flushPending(entry);
 		await this.registry.saveState(entry.definition.id, entry.state);
+		this.onStateChange?.();
 		await this.registry.appendLog(entry.definition.id, `[status]: watch ${status}`).catch(() => undefined);
 	}
 
@@ -441,6 +454,7 @@ export class WatchSupervisor {
 		const first = !entry.state.broken;
 		entry.state.broken = true;
 		await this.registry.saveState(entry.definition.id, entry.state);
+		this.onStateChange?.();
 		if (!first) return;
 		const tail = await this.registry.readLogTail(entry.definition.id, 10);
 		const body = reason
@@ -455,6 +469,7 @@ export class WatchSupervisor {
 		entry.streamAttempt = 0;
 		entry.state.restart_attempt = 0;
 		await this.registry.saveState(entry.definition.id, entry.state);
+		this.onStateChange?.();
 		await this.deliverSafely(entry, `Watch "${entry.definition.name}": recovered (check succeeded again).`);
 	}
 

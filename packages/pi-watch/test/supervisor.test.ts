@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 import { WatchRegistry } from "../src/registry.ts";
+import { formatWatcherStatus } from "../src/status.ts";
 import { WatchError, WatchSupervisor } from "../src/supervisor.ts";
 import type { WatchDefinition } from "../src/types.ts";
 
@@ -106,6 +107,7 @@ test("stream: clean exit is silent by default; on_finish notifies once", async (
 	});
 	await delay(600);
 	assert.deepEqual(silent.events, []);
+	assert.equal(silent.supervisor.get("quiet-exit", SESSION).state.status, "stopped");
 
 	const finishing = await withSupervisor(t);
 	await finishing.supervisor.create({
@@ -130,6 +132,7 @@ test("stream: non-zero exit notifies broke and restarts with backoff, then recov
 	});
 	await waitFor(() => events.some((event) => event.includes("broke")), "broke");
 	await waitFor(() => events.some((event) => event.includes("recovered")), "recovered after restart");
+	assert.equal(supervisor.get("restart", SESSION).state.broken, false, "restart clears broken state immediately");
 	await waitFor(() => events.some((event) => event.includes("finished")), "clean finish after restart");
 	const { state } = supervisor.get("restart", SESSION);
 	assert.equal(state.broken, false);
@@ -206,6 +209,31 @@ test("session scope isolates listing and lifecycle operations while allowing reu
 	assert.equal(supervisor.get("shared-name", otherSession).definition.id, second.id);
 	await assert.rejects(() => supervisor.pause("shared-name", SESSION), WatchError);
 	await assert.rejects(() => supervisor.tail("shared-name", SESSION, 50), WatchError);
+});
+
+test("status hook reflects create, pause, resume, and removal", async (t) => {
+	let fixture: Fixture | undefined;
+	const statuses: Array<string | undefined> = [];
+	fixture = await withSupervisor(t, {
+		onStateChange: () => {
+			if (fixture) statuses.push(formatWatcherStatus(fixture.supervisor.list(SESSION)));
+		},
+	});
+	await fixture.supervisor.create({
+		name: "status",
+		mode: "poll",
+		run: "exit 0",
+		everySeconds: 3600,
+		sessionId: SESSION,
+	});
+	assert.equal(statuses.at(-1), "👀 1/1 watcher active");
+
+	await fixture.supervisor.pause("status", SESSION);
+	assert.equal(statuses.at(-1), "👀 0/1 watcher active");
+	await fixture.supervisor.resume("status", SESSION);
+	assert.equal(statuses.at(-1), "👀 1/1 watcher active");
+	await fixture.supervisor.remove("status", SESSION);
+	assert.equal(statuses.at(-1), undefined);
 });
 
 test("watch_tail log captures [stdout]/[stderr] lines and status trailer input", async (t) => {
