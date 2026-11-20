@@ -1,0 +1,491 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import { createInterface, type Interface } from "node:readline";
+
+import type { WatchRegistry } from "./registry.ts";
+import {
+	brokeBody,
+	formatCoalesced,
+	finishedBody,
+	truncateBody,
+} from "./format.ts";
+import {
+	COALESCED_EVENT_LINES,
+	DEFAULT_EVERY_SECONDS,
+	EVENT_RATE_FLOOR_SECONDS,
+	MAX_EVENT_BODY_CHARS,
+	MIN_EVERY_SECONDS,
+	initialRuntimeState,
+	type WatchDefinition,
+	type WatchMode,
+	type WatchRuntimeState,
+} from "./types.ts";
+
+export type Deliver = (watch: WatchDefinition, body: string) => Promise<void>;
+
+interface WatchEntry {
+	definition: WatchDefinition;
+	state: WatchRuntimeState;
+	child: ChildProcess | null;
+	timer: NodeJS.Timeout | null;
+	flushTimer: NodeJS.Timeout | null;
+	lineReaders: Interface[];
+	intentionalStop: boolean;
+	timedOut: boolean;
+	stdoutBuf: string;
+	stderrBuf: string;
+	lastDeliverAt: number;
+	pendingCount: number;
+	pendingLines: string[];
+	streamAttempt: number;
+}
+
+export class WatchError extends Error {}
+
+const STREAM_BACKOFF_BASE_MS = 15_000;
+const STREAM_BACKOFF_MAX_MS = 300_000;
+
+interface SupervisorOptions {
+	eventRateFloorMs?: number;
+	/** Grace window that lets a burst of events coalesce into one delivery. */
+	graceMs?: number;
+	streamBackoffBaseMs?: number;
+	streamBackoffMaxMs?: number;
+	/** Test hook: lower bound for every_seconds validation. */
+	minEverySeconds?: number;
+}
+
+/**
+ * Owns watch processes and notification semantics. Runs inside the Pi
+ * process (v1: watches do not survive Pi restarts; definitions do).
+ */
+export class WatchSupervisor {
+	private readonly registry: WatchRegistry;
+	private readonly deliver: Deliver;
+	private readonly eventRateFloorMs: number;
+	private readonly graceMs: number;
+	private readonly streamBackoffBaseMs: number;
+	private readonly streamBackoffMaxMs: number;
+	private readonly minEverySeconds: number;
+	private readonly entries = new Map<string, WatchEntry>();
+
+	constructor(registry: WatchRegistry, deliver: Deliver, options: SupervisorOptions = {}) {
+		this.registry = registry;
+		this.deliver = deliver;
+		this.eventRateFloorMs = options.eventRateFloorMs ?? EVENT_RATE_FLOOR_SECONDS * 1000;
+		this.graceMs = options.graceMs ?? 500;
+		this.streamBackoffBaseMs = options.streamBackoffBaseMs ?? STREAM_BACKOFF_BASE_MS;
+		this.streamBackoffMaxMs = options.streamBackoffMaxMs ?? STREAM_BACKOFF_MAX_MS;
+		this.minEverySeconds = options.minEverySeconds ?? MIN_EVERY_SECONDS;
+	}
+
+	/** Called on session start: load definitions from disk, all stopped (v1: no auto-resume). */
+	async restore(): Promise<WatchDefinition[]> {
+		const definitions = await this.registry.listDefinitions();
+		for (const definition of definitions) {
+			const state = (await this.registry.loadState(definition.id)) ?? initialRuntimeState("stopped");
+			state.status = "stopped";
+			state.pid = null;
+			state.next_run_at = null;
+			this.entries.set(definition.id, this.newEntry(definition, state));
+			await this.registry.saveState(definition.id, state);
+		}
+		return definitions;
+	}
+
+	async create(input: {
+		name: string;
+		mode: WatchMode;
+		run: string;
+		everySeconds?: number | undefined;
+		match?: string | undefined;
+		onFinish?: boolean | undefined;
+		timeoutSeconds?: number | undefined;
+		sessionId: string;
+	}): Promise<WatchDefinition> {
+		const name = input.name.trim();
+		if (!name) throw new WatchError("name must not be empty");
+		if (name.includes("/")) throw new WatchError("name must not contain '/'");
+		for (const entry of this.entries.values()) {
+			if (entry.definition.name === name) {
+				throw new WatchError(`a watch named "${name}" already exists`);
+			}
+		}
+		if (input.mode === "poll") {
+			const every = input.everySeconds ?? DEFAULT_EVERY_SECONDS;
+			if (!Number.isInteger(every) || every < this.minEverySeconds) {
+				throw new WatchError(`every_seconds must be an integer of at least ${this.minEverySeconds}`);
+			}
+		}
+		let match: string | undefined;
+		if (input.mode === "stream" && input.match !== undefined) {
+			try {
+				new RegExp(input.match);
+			} catch {
+				throw new WatchError(`match is not a valid regular expression: ${input.match}`);
+			}
+			match = input.match;
+		}
+		const timeoutSeconds = input.timeoutSeconds ?? 120;
+		if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1) {
+			throw new WatchError("timeout_seconds must be an integer of at least 1");
+		}
+		const id = randomUUID();
+		const definition: WatchDefinition = {
+			id,
+			name,
+			mode: input.mode,
+			run: input.run,
+			...(input.mode === "poll" ? { every_seconds: input.everySeconds ?? DEFAULT_EVERY_SECONDS } : {}),
+			...(match !== undefined ? { match } : {}),
+			...(input.mode === "stream" && input.onFinish ? { on_finish: true } : {}),
+			timeout_seconds: timeoutSeconds,
+			session_id: input.sessionId,
+			created_at: new Date().toISOString(),
+		};
+		await this.registry.saveDefinition(definition);
+		await mkdir(this.registry.scriptStatePath(definition.id), { recursive: true, mode: 0o700 });
+		const entry = this.newEntry(definition, initialRuntimeState("running"));
+		this.entries.set(definition.id, entry);
+		await this.registry.appendLog(definition.id, `[status]: created (${definition.mode} mode)`);
+		void this.startEntry(entry);
+		return definition;
+	}
+
+	list(): Array<{ definition: WatchDefinition; state: WatchRuntimeState }> {
+		return [...this.entries.values()].map((entry) => ({
+			definition: entry.definition,
+			state: entry.state,
+		}));
+	}
+
+	get(name: string): { definition: WatchDefinition; state: WatchRuntimeState } {
+		const entry = this.byName(name);
+		return { definition: entry.definition, state: entry.state };
+	}
+
+	getById(id: string): { definition: WatchDefinition; state: WatchRuntimeState } | undefined {
+		const entry = this.entries.get(id);
+		return entry ? { definition: entry.definition, state: entry.state } : undefined;
+	}
+
+	async pause(name: string): Promise<void> {
+		const entry = this.byName(name);
+		await this.stopEntry(entry, "paused");
+	}
+
+	async resume(name: string): Promise<void> {
+		const entry = this.byName(name);
+		if (entry.state.status === "running") return;
+		entry.state.status = "running";
+		entry.state.broken = false;
+		await this.registry.saveState(entry.definition.id, entry.state);
+		await this.registry.appendLog(entry.definition.id, "[status]: resumed");
+		void this.startEntry(entry);
+	}
+
+	async remove(name: string): Promise<void> {
+		const entry = this.byName(name);
+		await this.stopEntry(entry, "stopped");
+		this.entries.delete(entry.definition.id);
+		await this.registry.remove(entry.definition.id);
+	}
+
+	async tail(name: string, maxLines: number): Promise<string[]> {
+		const entry = this.byName(name);
+		return this.registry.readLogTail(entry.definition.id, maxLines);
+	}
+
+	/** Kill everything; called on session shutdown. Definitions persist as stopped. */
+	async shutdown(): Promise<void> {
+		for (const entry of this.entries.values()) {
+			await this.stopEntry(entry, "stopped");
+		}
+	}
+
+	private byName(name: string): WatchEntry {
+		for (const entry of this.entries.values()) {
+			if (entry.definition.name === name) return entry;
+		}
+		throw new WatchError(`no watch named "${name}"`);
+	}
+
+	private newEntry(definition: WatchDefinition, state: WatchRuntimeState): WatchEntry {
+		return {
+			definition,
+			state,
+			child: null,
+			timer: null,
+			flushTimer: null,
+			lineReaders: [],
+			intentionalStop: false,
+			timedOut: false,
+			stdoutBuf: "",
+			stderrBuf: "",
+			lastDeliverAt: 0,
+			pendingCount: 0,
+			pendingLines: [],
+			streamAttempt: state.restart_attempt,
+		};
+	}
+
+	private async startEntry(entry: WatchEntry): Promise<void> {
+		if (entry.definition.mode === "poll") await this.pollTick(entry);
+		else await this.streamStart(entry);
+	}
+
+	// ---------------------------------------------------------------- poll --
+
+	private async pollTick(entry: WatchEntry): Promise<void> {
+		if (entry.state.status !== "running") return;
+		const definition = entry.definition;
+		const child = this.spawn(entry);
+		entry.stdoutBuf = "";
+		entry.stderrBuf = "";
+		entry.timedOut = false;
+		const timeoutMs = definition.timeout_seconds * 1000;
+		const timeout = setTimeout(() => {
+			entry.timedOut = true;
+			child.kill("SIGKILL");
+		}, timeoutMs);
+		this.attachLineReaders(entry, child, (line, stream) => {
+			if (stream === "stdout") entry.stdoutBuf += `${line}\n`;
+			else entry.stderrBuf += `${line}\n`;
+		});
+		child.on("exit", (code, signal) => {
+			clearTimeout(timeout);
+			void this.pollFinished(entry, child, code, signal).catch((error: Error) => this.logStatus(entry, `error: ${error.message}`));
+		});
+	}
+
+	private async pollFinished(entry: WatchEntry, child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
+		if (entry.child !== child) return;
+		entry.child = null;
+		entry.lineReaders.forEach((reader) => reader.close());
+		entry.lineReaders = [];
+		this.recordExit(entry, code, signal);
+		const definition = entry.definition;
+		if (!entry.intentionalStop && entry.state.status === "running") {
+			if (entry.timedOut) {
+				await this.broke(entry, null, "SIGKILL", "watchdog timeout");
+			} else if (code === 0) {
+				await this.recovered(entry);
+			} else if (code === 1) {
+				const output = `${entry.stdoutBuf}${entry.stderrBuf}`.trim();
+				await this.event(entry, output || `fired at ${new Date().toISOString()}`);
+			} else {
+				await this.broke(entry, code, signal, undefined);
+			}
+		}
+		entry.intentionalStop = false;
+		if (entry.state.status === "running") this.schedulePoll(entry);
+	}
+
+	private schedulePoll(entry: WatchEntry): void {
+		const everyMs = (entry.definition.every_seconds ?? DEFAULT_EVERY_SECONDS) * 1000;
+		entry.state.next_run_at = new Date(Date.now() + everyMs).toISOString();
+		void this.registry.saveState(entry.definition.id, entry.state);
+		entry.timer = setTimeout(() => {
+			entry.state.next_run_at = null;
+			void this.pollTick(entry);
+		}, everyMs);
+	}
+
+	// -------------------------------------------------------------- stream --
+
+	private async streamStart(entry: WatchEntry): Promise<void> {
+		if (entry.state.status !== "running") return;
+		const definition = entry.definition;
+		const wasBroken = entry.state.broken;
+		const child = this.spawn(entry);
+		const matcher = definition.match !== undefined ? new RegExp(definition.match) : null;
+		this.attachLineReaders(entry, child, (line, stream) => {
+			if (stream === "stderr") return;
+			if (line.trim() === "") return;
+			if (!matcher || matcher.test(line)) void this.event(entry, line);
+		});
+		child.on("exit", (code, signal) => {
+			void this.streamFinished(entry, child, code, signal).catch((error: Error) => this.logStatus(entry, `error: ${error.message}`));
+		});
+		if (wasBroken) {
+			entry.streamAttempt = 0;
+			entry.state.restart_attempt = 0;
+			await this.registry.saveState(definition.id, entry.state);
+			await this.deliverSafely(entry, `Watch "${definition.name}": recovered (script restarted successfully).`);
+		}
+	}
+
+	private async streamFinished(entry: WatchEntry, child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
+		if (entry.child !== child) return;
+		entry.child = null;
+		entry.lineReaders.forEach((reader) => reader.close());
+		entry.lineReaders = [];
+		this.recordExit(entry, code, signal);
+		const definition = entry.definition;
+		if (entry.intentionalStop || entry.state.status !== "running") {
+			entry.intentionalStop = false;
+			return;
+		}
+		if (code === 0) {
+			entry.streamAttempt = 0;
+			entry.state.restart_attempt = 0;
+			entry.state.broken = false;
+			await this.registry.saveState(definition.id, entry.state);
+			if (definition.on_finish) {
+				await this.deliverSafely(entry, finishedBody(definition, await this.registry.readLogTail(definition.id, 10)));
+			}
+			return;
+		}
+		await this.broke(entry, code, signal, entry.timedOut ? "watchdog timeout" : undefined);
+		entry.streamAttempt += 1;
+		entry.state.restart_attempt = entry.streamAttempt;
+		const backoffMs = Math.min(this.streamBackoffBaseMs * 2 ** (entry.streamAttempt - 1), this.streamBackoffMaxMs);
+		entry.state.next_run_at = new Date(Date.now() + backoffMs).toISOString();
+		await this.registry.saveState(definition.id, entry.state);
+		entry.timer = setTimeout(() => {
+			entry.state.next_run_at = null;
+			void this.streamStart(entry);
+		}, backoffMs);
+	}
+
+	// -------------------------------------------------------------- shared --
+
+	private spawn(entry: WatchEntry): ChildProcess {
+		const definition = entry.definition;
+		const child = spawn("/bin/bash", ["-c", definition.run], {
+			env: {
+				...process.env,
+				WATCH_ID: definition.id,
+				WATCH_NAME: definition.name,
+				WATCH_MODE: definition.mode,
+				WATCH_STATE: this.registry.scriptStatePath(definition.id),
+			},
+		});
+		entry.child = child;
+		entry.state.pid = child.pid ?? null;
+		entry.state.exit_code = null;
+		entry.state.exit_signal = null;
+		void this.registry.saveState(definition.id, entry.state);
+		return child;
+	}
+
+	private attachLineReaders(
+		entry: WatchEntry,
+		child: ChildProcess,
+		onLine: (line: string, stream: "stdout" | "stderr") => void,
+	): void {
+		for (const [stream, readable] of [["stdout", child.stdout], ["stderr", child.stderr]] as const) {
+			if (!readable) continue;
+			const reader = createInterface({ input: readable });
+			reader.on("line", (line) => {
+				void this.registry.appendLog(entry.definition.id, `[${stream}]: ${line}`).catch(() => undefined);
+				onLine(line, stream);
+			});
+			entry.lineReaders.push(reader);
+		}
+	}
+
+	private recordExit(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null): void {
+		entry.state.pid = null;
+		entry.state.exit_code = code;
+		entry.state.exit_signal = signal;
+		if (code !== null || signal) {
+			void this.registry
+				.appendLog(entry.definition.id, `[status]: script exited with ${signal ? `signal ${signal}` : `code ${code}`}`)
+				.catch(() => undefined);
+		}
+		void this.registry.saveState(entry.definition.id, entry.state);
+	}
+
+	private async stopEntry(entry: WatchEntry, status: WatchRuntimeState["status"]): Promise<void> {
+		entry.intentionalStop = true;
+		if (entry.timer) clearTimeout(entry.timer);
+		if (entry.flushTimer) clearTimeout(entry.flushTimer);
+		entry.timer = null;
+		entry.flushTimer = null;
+		const child = entry.child;
+		entry.child = null;
+		if (child && child.exitCode === null && !child.killed) child.kill("SIGTERM");
+		entry.lineReaders.forEach((reader) => reader.close());
+		entry.lineReaders = [];
+		entry.state.status = status;
+		entry.state.pid = null;
+		entry.state.next_run_at = null;
+		await this.flushPending(entry);
+		await this.registry.saveState(entry.definition.id, entry.state);
+		await this.registry.appendLog(entry.definition.id, `[status]: watch ${status}`).catch(() => undefined);
+	}
+
+	private async broke(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null, reason: string | undefined): Promise<void> {
+		const first = !entry.state.broken;
+		entry.state.broken = true;
+		await this.registry.saveState(entry.definition.id, entry.state);
+		if (!first) return;
+		const tail = await this.registry.readLogTail(entry.definition.id, 10);
+		const body = reason
+			? `Watch "${entry.definition.name}": script broke (${reason}).\nUse watch_tail with name "${entry.definition.name}" for the full output.`
+			: brokeBody(entry.definition, code, signal, tail);
+		await this.deliverSafely(entry, body);
+	}
+
+	private async recovered(entry: WatchEntry): Promise<void> {
+		if (!entry.state.broken) return;
+		entry.state.broken = false;
+		entry.streamAttempt = 0;
+		entry.state.restart_attempt = 0;
+		await this.registry.saveState(entry.definition.id, entry.state);
+		await this.deliverSafely(entry, `Watch "${entry.definition.name}": recovered (check succeeded again).`);
+	}
+
+	/**
+	 * Queue an event for delivery. Events are held for a short grace window so
+	 * a burst coalesces into one notification (last few lines plus a
+	 * suppression trailer); deliveries are additionally separated by the rate
+	 * floor. Everything is appended to the watch log regardless.
+	 */
+	private async event(entry: WatchEntry, payload: string): Promise<void> {
+		entry.pendingCount += 1;
+		entry.pendingLines.push(payload);
+		if (entry.pendingLines.length > COALESCED_EVENT_LINES) entry.pendingLines.shift();
+		if (entry.flushTimer) return;
+		const sinceLast = Date.now() - entry.lastDeliverAt;
+		const wait = entry.lastDeliverAt === 0 || sinceLast >= this.eventRateFloorMs
+			? this.graceMs
+			: this.eventRateFloorMs - sinceLast;
+		entry.flushTimer = setTimeout(() => {
+			entry.flushTimer = null;
+			void this.flushPending(entry);
+		}, wait);
+	}
+
+	private async flushPending(entry: WatchEntry): Promise<void> {
+		if (entry.flushTimer) clearTimeout(entry.flushTimer);
+		entry.flushTimer = null;
+		if (entry.pendingCount === 0) return;
+		const count = entry.pendingCount;
+		const lines = [...entry.pendingLines];
+		entry.pendingCount = 0;
+		entry.pendingLines = [];
+		entry.lastDeliverAt = Date.now();
+		const definition = entry.definition;
+		const body = count === 1
+			? truncateBody(lines[0] ?? "", MAX_EVENT_BODY_CHARS)
+			: formatCoalesced(definition, { total: count, lines });
+		await this.deliverSafely(entry, body.startsWith(`Watch `) ? body : `Watch "${definition.name}" fired:\n\n${body}`);
+	}
+
+	private async deliverSafely(entry: WatchEntry, body: string): Promise<void> {
+		try {
+			await this.deliver(entry.definition, body);
+		} catch (error) {
+			await this.registry
+				.appendLog(entry.definition.id, `[status]: delivery error: ${(error as Error).message}`)
+				.catch(() => undefined);
+		}
+	}
+
+	private logStatus(entry: WatchEntry, text: string): void {
+		void this.registry.appendLog(entry.definition.id, `[status]: ${text}`).catch(() => undefined);
+	}
+}
