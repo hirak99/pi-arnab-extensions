@@ -8,7 +8,7 @@ import { sendNativeNotification } from "pi-durable-inbox";
 
 import { TEAM_COMMANDS } from "./commands.ts";
 import { InboxDelivery } from "./inbox-delivery.ts";
-import { parseInlineMessageId } from "./message-format.ts";
+import { isTeamMessageId, parseInlineMessageId } from "./message-format.ts";
 import { TeamStore } from "./store.ts";
 import { detectTmuxTransport, tmuxPaneExists } from "./tmux.ts";
 import type { AgentRegistration, RegistrationInput, TeamMessage } from "./types.ts";
@@ -103,6 +103,26 @@ export default function teamExtension(pi: ExtensionAPI) {
 			throw new Error("this session is not registered; use team_register or /team-agent-register first");
 		}
 		return selfAgentId;
+	}
+
+	async function sendDirectMessage(
+		to: string,
+		text: string,
+		replyTo?: string,
+		delivery: "inline" | "reference" = "inline",
+	): Promise<TeamMessage> {
+		const sender = await store.getAgent(requireSelf());
+		const recipient = await store.getAgent(to);
+		if (recipient.status !== "active" || !(await isLive(recipient))) {
+			throw new Error("recipient is not active and live; message was not sent");
+		}
+		return store.sendDirect({
+			from: sender.agent_id,
+			to: recipient.agent_id,
+			body: text,
+			replyTo,
+			delivery,
+		});
 	}
 
 	async function isLive(registration: AgentRegistration): Promise<boolean> {
@@ -323,6 +343,10 @@ export default function teamExtension(pi: ExtensionAPI) {
 		label: "Send team message",
 		description: "Persist a direct message for another active team agent and deliver a custom notification that steers a busy session or starts an idle follow-up turn without entering terminal input. Defaults to inline delivery; use reference delivery for sensitive content.",
 		promptSnippet: "Send a durable direct message to another team agent",
+		promptGuidelines: [
+			"When a response to a direct team message is requested or useful, use team_reply with reply_to instead of addressing a new message manually.",
+			"A normal assistant response is not delivered to the originating agent. Receipt alone does not require an acknowledgment.",
+		],
 		parameters: Type.Object({
 			to: Type.String({ description: "Recipient team agent UUID" }),
 			text: Type.String({ description: "Message body" }),
@@ -332,19 +356,54 @@ export default function teamExtension(pi: ExtensionAPI) {
 			})),
 		}),
 		async execute(_toolCallId, params, _signal) {
-			const sender = await store.getAgent(requireSelf());
-			const recipient = await store.getAgent(params.to);
-			if (recipient.status !== "active" || !(await isLive(recipient))) {
-				throw new Error("recipient is not active and live; message was not sent");
-			}
-			const message = await store.sendDirect({
-				from: sender.agent_id,
-				to: recipient.agent_id,
-				body: params.text,
-				replyTo: params.reply_to,
-				delivery: params.delivery ?? "inline",
-			});
+			const message = await sendDirectMessage(params.to, params.text, params.reply_to, params.delivery ?? "inline");
 			return toolResult({ message_id: message.metadata.id, persisted: true, wake_status: "queued" });
+		},
+	});
+
+	pi.registerTool({
+		name: "team_reply",
+		label: "Reply to team message",
+		description: "Reply to a direct team message addressed to this agent. Resolves the original sender automatically and preserves reply threading; unknown, channel, and other agents' messages are rejected. Supports inline or reference delivery.",
+		promptSnippet: "Reply to a direct team message with automatic recipient and threading",
+		promptGuidelines: [
+			"When a response to a direct team message is requested or useful, use team_reply with reply_to. A normal assistant response is not delivered to the originating agent.",
+			"Receipt alone does not require an acknowledgment. Watch notifications and asynchronous channel messages are not direct-reply requests.",
+		],
+		parameters: Type.Object({
+			reply_to: Type.String({ description: "Direct message UUID addressed to this agent" }),
+			text: Type.String({ description: "Reply body" }),
+			delivery: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("reference")], {
+				description: "inline includes the reply body in the wake-up; reference sends only metadata and requires an inbox read (default inline)",
+			})),
+		}),
+		async execute(_toolCallId, params) {
+			const self = requireSelf();
+			if (!isTeamMessageId(params.reply_to)) {
+				throw new Error("reply_to must identify a direct message addressed to this agent");
+			}
+			let original: TeamMessage | undefined;
+			try {
+				[original] = await store.readInbox(self, { messageId: params.reply_to });
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			if (!original || original.metadata.channel !== null || original.metadata.to !== self) {
+				throw new Error("reply_to must identify a direct message addressed to this agent");
+			}
+			const message = await sendDirectMessage(
+				original.metadata.from,
+				params.text,
+				original.metadata.id,
+				params.delivery ?? "inline",
+			);
+			return toolResult({
+				message_id: message.metadata.id,
+				to: original.metadata.from,
+				reply_to: original.metadata.id,
+				persisted: true,
+				wake_status: "queued",
+			});
 		},
 	});
 
@@ -402,7 +461,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 		label: "Check team message read status",
 		description: "Optionally check whether a direct message sent by this agent has been read. Does not notify or wake anyone.",
 		parameters: Type.Object({
-			message_id: Type.String({ description: "Direct message UUID returned by team_send_message" }),
+			message_id: Type.String({ description: "Direct message UUID returned by team_send_message or team_reply" }),
 		}),
 		async execute(_toolCallId, params) {
 			return toolResult(await store.getMessageStatus(requireSelf(), params.message_id));

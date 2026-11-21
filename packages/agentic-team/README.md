@@ -103,6 +103,7 @@ Without a tmux pane, liveness relies on the registered process ID.
 | `team_get_self` | Return full identity, registration, transport, and liveness |
 | `team_list_agents` | Discover active agents; optionally include inactive/archived entries |
 | `team_send_message` | Persist a direct message and deliver a steering/idle-wakeup notification |
+| `team_reply` | Reply to a direct message with automatic recipient resolution and `reply_to` threading |
 | `team_read_messages` | Read the current inbox or channel history; inbox reads record receipts |
 | `team_message_status` | Optionally check the read status of a message sent by this agent |
 | `team_post_channel` | Post an asynchronous channel message |
@@ -128,17 +129,31 @@ Team message from Sender (<sender-uuid>), message <message-uuid>:
 Please review the PR and reply when it is merged.
 ```
 
-The recipient can process the message immediately and respond with a normal
-`team_send_message` when requested. No separate acknowledgement is required.
+The recipient can process the message immediately. When a response is requested
+or useful, it calls `team_reply` with the incoming message UUID as `reply_to`;
+the tool validates that the original was a direct message addressed to this
+agent, resolves the original sender automatically, and preserves threading:
 
-For sensitive content, use `delivery="reference"`. The native message then
-contains only sender and message metadata; the recipient uses
+```text
+team_reply(reply_to="<message-uuid>", text="Review complete")
+```
+
+A normal assistant response is not delivered to the originating agent. No
+acknowledgment is required merely because a message was received or read.
+Watch notifications and asynchronous channel messages are not direct-reply
+requests.
+
+Reply notifications include `in reply to <message-uuid>` when threaded. Both
+`team_send_message` and `team_reply` default to `delivery="inline"`; either
+can use `delivery="reference"` for sensitive content. The native reference
+message contains only sender/message/thread metadata, and the recipient uses
 `team_read_messages(message_id=...)` to retrieve the body.
 
 Inline messages record a read receipt when the receiving extension sends the
-custom notification. Reference messages record one when the recipient reads the inbox. The
-sender can optionally inspect `team_message_status(message_id=...)`; receipts do
-not wake the sender or start another model turn. The message file remains the
+custom notification. Reference messages record one when the recipient reads
+the inbox. The sender can optionally inspect
+`team_message_status(message_id=...)`; receipts do not wake the sender or start
+another model turn. The message file remains the
 durable record if native delivery fails; the recipient reports watcher errors in
 its Pi UI.
 

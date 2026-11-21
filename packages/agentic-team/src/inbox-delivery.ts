@@ -1,6 +1,6 @@
 import { InboxDelivery as CoreInboxDelivery } from "pi-durable-inbox";
 
-import { formatInlineMessage } from "./message-format.ts";
+import { formatInlineMessage, isTeamMessageId } from "./message-format.ts";
 import type { TeamStore } from "./store.ts";
 import type { AgentRegistration, TeamMessage } from "./types.ts";
 
@@ -21,11 +21,18 @@ function teamHooks(store: TeamStore) {
 			}
 		},
 		formatInline(sender: AgentRegistration, message: TeamMessage): string {
-			return formatInlineMessage(sender.name, sender.agent_id, message.metadata.id, message.body.trimEnd());
+			return formatInlineMessage(
+				sender.name,
+				sender.agent_id,
+				message.metadata.id,
+				message.body.trimEnd(),
+				message.metadata.reply_to,
+			);
 		},
 		formatReference(sender: AgentRegistration, message: TeamMessage): string {
+			const threading = isTeamMessageId(message.metadata.reply_to) ? ` (in reply to ${message.metadata.reply_to})` : "";
 			return [
-				`Team message ${message.metadata.id} from ${sender.name} is waiting in your inbox.`,
+				`Team message ${message.metadata.id} from ${sender.name} is waiting in your inbox${threading}.`,
 				"Use team_read_messages with message_id to read it.",
 			].join(" ");
 		},

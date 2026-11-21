@@ -83,10 +83,12 @@ test("reference delivery keeps the body out of the native wake-up", async (t) =>
 		to: recipient.agent_id,
 		body: "SENSITIVE BODY MUST NOT BE INLINED",
 		delivery: "reference",
+		replyTo: sender.agent_id,
 	});
 	await waitFor(() => nativeMessages.length === 1);
 	assert.doesNotMatch(nativeMessages[0]!, /SENSITIVE BODY/);
 	assert.match(nativeMessages[0]!, new RegExp(message.metadata.id));
+	assert.match(nativeMessages[0]!, new RegExp(`in reply to ${sender.agent_id}`));
 });
 
 test("duplicate watcher events deliver a message once", async (t) => {

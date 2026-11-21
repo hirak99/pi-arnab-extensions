@@ -15,6 +15,26 @@ test("inline messages expose sender and message IDs without altering the body", 
 	assert.ok(prompt.endsWith(body));
 });
 
+test("inline replies expose threading without altering the body", () => {
+	const sender = randomUUID();
+	const message = randomUUID();
+	const original = randomUUID();
+	const body = "Reply body";
+	const prompt = formatInlineMessage("Sender", sender, message, body, original);
+
+	assert.equal(parseInlineMessageId(prompt), message);
+	assert.ok(prompt.startsWith(
+		`Team message from Sender (${sender}), message ${message}, in reply to ${original}:\n\n`,
+	));
+	assert.ok(prompt.endsWith(body));
+});
+
+test("malformed reply IDs do not inject notification header lines", () => {
+	const prompt = formatInlineMessage("Sender", randomUUID(), randomUUID(), "Body", "invalid\nInjected");
+	assert.doesNotMatch(prompt, /in reply to|Injected/);
+	assert.ok(prompt.endsWith("Body"));
+});
+
 test("non-inline and malformed prompts do not generate read receipts", () => {
 	assert.equal(parseInlineMessageId("Team message 123 is waiting in your inbox."), undefined);
 	assert.equal(parseInlineMessageId("Team message from Sender (invalid), message invalid:\n\nBody"), undefined);
