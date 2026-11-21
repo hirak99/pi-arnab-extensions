@@ -174,8 +174,8 @@ only when there are no subagents, background jobs, or watches to display.
 ### Auto-start (per-project opt-in)
 
 By default nothing connects until you run `/pi-discord-remote start`. A
-project can opt in to connecting automatically on **new and resumed**
-sessions by adding `.pi/discord-remote.json` to the project:
+project can opt in to automatic connection by adding
+`.pi/discord-remote.json` to the project:
 
 ```json
 { "autoStart": true }
@@ -186,16 +186,17 @@ At session start the extension merges that file over the global config
 per project (e.g. a different `categoryId`), but the bot `token` only needs
 to live in the global config. Details:
 
-- auto-connect fires only for `session_start` reasons `new` and `resume`;
-  reloads keep the existing connection, and sessions without the project
-  file stay manual
+- auto-connect fires for `session_start` reasons `new`, `resume`, and
+  `startup`; some Pi launch paths use `startup` even when resuming an existing
+  session. Reloads keep the existing connection, and sessions without the
+  project file stay manual
 - an unparseable project file logs a warning and falls back to the global
   config — a broken opt-in never breaks the session
 - `/pi-discord-remote start` also honors the project overrides
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `autoStart` | boolean | `false` | Connect to Discord automatically when a new or resumed session starts (intended as a per-project opt-in via `.pi/discord-remote.json`) |
+| `autoStart` | boolean | `false` | Connect to Discord automatically for `new`, `resume`, or `startup` session starts (intended as a per-project opt-in via `.pi/discord-remote.json`) |
 
 ### Static channels
 
@@ -309,7 +310,7 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `categoryId` | string | — | Optional category for auto-created channels |
 | `allowedUserIds` | string[] | `[]` | Allow-list of Discord user IDs (empty = everyone) |
 | `reactions` | boolean | `true` | React with ⏳ while processing |
-| `autoStart` | boolean | `false` | Connect automatically on new/resumed session start — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
+| `autoStart` | boolean | `false` | Connect automatically for `new`, `resume`, or `startup` session starts — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
 | `staticChannel` | boolean | `false` | Keep the channel across sessions (lock read-only on end, reuse on next session) — see above |
 | `channelName` | string | — | Explicit channel name, no date suffix, honored with or without `staticChannel` — see above |
 

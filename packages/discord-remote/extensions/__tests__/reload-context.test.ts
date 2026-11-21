@@ -115,11 +115,29 @@ afterEach(() => {
 });
 
 describe("Discord client reload handoff", () => {
+  it.each(["new", "resume", "startup"])("auto-starts a %s session when the project opts in", async (reason) => {
+    vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({
+      token: "test-token",
+      guildId: "guild-1",
+      autoStart: true,
+    });
+    const harness = createHarness();
+    const ui = makeUi();
+    const before = discord.instances.length;
+
+    await harness.emit("session_start", { reason }, { cwd: "/test-project", ui });
+
+    expect(discord.instances).toHaveLength(before + 1);
+    expect(discord.instances[before].login).toHaveBeenCalledWith("test-token");
+    expect(loadEffectiveConfig).toHaveBeenCalledWith("/test-project");
+    await harness.emit("session_shutdown", { reason: "quit" });
+  });
+
   it("adopts the live client without retaining stale pi or ctx callbacks", async () => {
     const first = createHarness();
     const oldUi = makeUi();
     await first.start({ cwd: "/test-project", ui: oldUi });
-    const client = discord.instances[0];
+    const client = discord.instances[discord.instances.length - 1];
     expect(client.listenerCount("messageCreate")).toBe(1);
     expect(client.listenerCount("error")).toBe(1);
 
@@ -137,11 +155,12 @@ describe("Discord client reload handoff", () => {
       throw new Error("stale ctx");
     });
 
+    const instanceCount = discord.instances.length;
     const second = createHarness();
     const newUi = makeUi();
     await second.emit("session_start", { reason: "reload" }, { cwd: "/test-project", ui: newUi });
 
-    expect(discord.instances).toHaveLength(1);
+    expect(discord.instances).toHaveLength(instanceCount);
     expect(client.listenerCount("messageCreate")).toBe(1);
     expect(client.listenerCount("error")).toBe(1);
     expect(client.listenerCount("shardDisconnect")).toBe(1);

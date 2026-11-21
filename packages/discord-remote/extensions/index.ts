@@ -964,10 +964,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── Auto-connect on new/resumed sessions (per-project opt-in) ────────
-  // Fires when a session starts. Only "new" and "resume" are auto-connected
-  // (when the project opts in via .pi/discord-remote.json with
-  // { "autoStart": true }); "reload" keeps the existing client —
-  // session_shutdown deliberately preserves it across reloads.
+  // Fires when a session starts. "new", "resume", and the generic "startup"
+  // reason are auto-connected when the project opts in. Some Pi launch paths
+  // resume an existing session with reason "startup" rather than "resume".
+  // "reload" keeps the existing client — session_shutdown deliberately
+  // preserves it across reloads.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("session_start", async (event: any, ctx: any) => {
     connectNotify = (msg, level) => ctx.ui.notify(msg, level);
@@ -1002,7 +1003,7 @@ export default function (pi: ExtensionAPI) {
       }
       return;
     }
-    if (event?.reason !== "new" && event?.reason !== "resume") return;
+    if (event?.reason !== "new" && event?.reason !== "resume" && event?.reason !== "startup") return;
     if (client) return;
     const cfg = await loadEffectiveConfig(ctx?.cwd);
     if (!cfg?.autoStart) return;
