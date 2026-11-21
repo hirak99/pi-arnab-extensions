@@ -35,8 +35,8 @@ export interface Config {
   displayNames?: Record<string, string | null>;
   /** Mirror session activity that did NOT originate from Discord into the
    * channel: prompts typed in the pi terminal, their tool-call labels, and
-   * the assistant's replies (default: false — only Discord-originated turns
-   * are mirrored). */
+   * the assistant's replies (default: true; set false to mirror only
+   * Discord-originated turns). */
   echo?: boolean;
   /** Inject messages received while a turn is running into that turn
    * ("steering": the agent sees them at its next step, before its next LLM
@@ -92,6 +92,9 @@ export const PROJECT_CONFIG_NAME = "discord-remote.json";
 export async function loadConfig(): Promise<Config | null> {
   try {
     const cfg = JSON.parse(await readFile(CONFIG_FILE, "utf-8")) as Config;
+    // Echo is an opt-out default. Normalize legacy configs that predate the
+    // field while preserving an explicit false.
+    cfg.echo = cfg.echo ?? true;
     // Allow DISCORD_TOKEN env var to override the config token
     if (process.env.DISCORD_TOKEN) {
       cfg.token = process.env.DISCORD_TOKEN;
@@ -105,6 +108,7 @@ export async function loadConfig(): Promise<Config | null> {
         guildId: process.env.DISCORD_GUILD_ID,
         categoryId: process.env.DISCORD_CATEGORY_ID,
         reactions: true,
+        echo: true,
       };
     }
     return null;
@@ -149,6 +153,7 @@ export function defaultConfigTemplate(): string {
         categoryId: "",
         allowedUserIds: [],
         reactions: true,
+        echo: true,
       },
       null,
       2,

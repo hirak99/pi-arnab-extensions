@@ -29,6 +29,7 @@ describe("defaultConfigTemplate", () => {
     expect(parsed).toHaveProperty("categoryId");
     expect(parsed).toHaveProperty("allowedUserIds");
     expect(parsed).toHaveProperty("reactions");
+    expect(parsed).toHaveProperty("echo");
   });
 
   it("has sensible defaults", async () => {
@@ -37,6 +38,7 @@ describe("defaultConfigTemplate", () => {
     expect(parsed.token).toBe("");
     expect(parsed.guildId).toBe("");
     expect(parsed.reactions).toBe(true);
+    expect(parsed.echo).toBe(true);
     expect(parsed.allowedUserIds).toEqual([]);
   });
 
@@ -116,6 +118,7 @@ describe("saveConfig + loadConfig", () => {
       expect(result!.guildId).toBe("env-guild");
       expect(result!.categoryId).toBe("env-category");
       expect(result!.reactions).toBe(true);
+      expect(result!.echo).toBe(true);
     } finally {
       if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
       else delete process.env.DISCORD_TOKEN;
@@ -145,6 +148,22 @@ describe("saveConfig + loadConfig", () => {
     } finally {
       if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
       else delete process.env.DISCORD_TOKEN;
+    }
+  });
+
+  it("defaults missing echo to true and preserves an explicit opt-out", async () => {
+    const { loadConfig, saveConfig } = await import("../config.js");
+    const origToken = process.env.DISCORD_TOKEN;
+    delete process.env.DISCORD_TOKEN;
+
+    try {
+      await saveConfig({ token: "legacy-token", guildId: "legacy-guild" });
+      expect((await loadConfig())!.echo).toBe(true);
+
+      await saveConfig({ token: "quiet-token", guildId: "quiet-guild", echo: false });
+      expect((await loadConfig())!.echo).toBe(false);
+    } finally {
+      if (origToken !== undefined) process.env.DISCORD_TOKEN = origToken;
     }
   });
 
@@ -224,7 +243,7 @@ describe("loadEffectiveConfig", () => {
       const projectDir = await makeProjectDir();
       await writeProjectOverride(
         projectDir,
-        JSON.stringify({ autoStart: true, categoryId: "project-category" }),
+        JSON.stringify({ autoStart: true, categoryId: "project-category", echo: false }),
       );
 
       const result = await loadEffectiveConfig(projectDir);
@@ -232,6 +251,7 @@ describe("loadEffectiveConfig", () => {
       // Overridden keys come from the project file…
       expect(result!.autoStart).toBe(true);
       expect(result!.categoryId).toBe("project-category");
+      expect(result!.echo).toBe(false);
       // …everything else falls through to the global config.
       expect(result!.token).toBe("global-token");
       expect(result!.guildId).toBe("global-guild");

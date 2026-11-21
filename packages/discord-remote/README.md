@@ -61,8 +61,8 @@ are injected with no prefix at all.
 
 ### Echo (two-way mirror)
 
-By default the channel only shows turns that started in Discord. With
-`"echo": true` in the config, everything is mirrored both ways:
+By default, everything is mirrored both ways (`"echo": true`). Set
+`"echo": false` to show only turns that started in Discord. With echo enabled:
 
 - prompts typed in the Pi terminal appear in the channel as `🖥️ **Terminal**: …`,
   with a horizontal-rule divider appended so the boundary before the agent's reply is clear
@@ -86,7 +86,7 @@ them.
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `echo` | boolean | `false` | Mirror terminal-originated turns and displayable custom messages into the Discord channel |
+| `echo` | boolean | `true` | Mirror terminal-originated turns and displayable custom messages into the Discord channel; set `false` for Discord-originated turns only |
 
 ### Steering (mid-turn messages)
 
