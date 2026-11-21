@@ -181,14 +181,16 @@ project can opt in to automatic connection by adding
 { "autoStart": true }
 ```
 
-At session start the extension merges that file over the global config
-(`~/.pi/agent/pi-discord-remote/config.json`) — any key can be overridden
-per project (e.g. a different `categoryId`), but the bot `token` only needs
-to live in the global config. Details:
+At an interactive session start the extension merges that file over the global
+config (`~/.pi/agent/pi-discord-remote/config.json`) — any key can be
+overridden per project (e.g. a different `categoryId`), but the bot `token`
+only needs to live in the global config. Details:
 
-- auto-connect fires for `session_start` reasons `new`, `resume`, and
-  `startup`; some Pi launch paths use `startup` even when resuming an existing
-  session. Reloads keep the existing connection, and sessions without the
+- auto-connect fires for interactive `session_start` reasons `new`, `resume`,
+  and `startup`; some Pi launch paths use `startup` even when resuming an
+  existing session. Non-interactive subagent and headless sessions are
+  manual-only, preventing child activity from opening an independent Discord
+  mirror. Reloads keep the existing connection, and sessions without the
   project file stay manual
 - an unparseable project file logs a warning and falls back to the global
   config — a broken opt-in never breaks the session
@@ -196,7 +198,7 @@ to live in the global config. Details:
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `autoStart` | boolean | `false` | Connect to Discord automatically for `new`, `resume`, or `startup` session starts (intended as a per-project opt-in via `.pi/discord-remote.json`) |
+| `autoStart` | boolean | `false` | Connect automatically for interactive `new`, `resume`, or `startup` session starts; non-interactive subagent and headless sessions are manual-only (intended as a per-project opt-in via `.pi/discord-remote.json`) |
 
 ### Static channels
 
@@ -310,7 +312,7 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `categoryId` | string | — | Optional category for auto-created channels |
 | `allowedUserIds` | string[] | `[]` | Allow-list of Discord user IDs (empty = everyone) |
 | `reactions` | boolean | `true` | React with ⏳ while processing |
-| `autoStart` | boolean | `false` | Connect automatically for `new`, `resume`, or `startup` session starts — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
+| `autoStart` | boolean | `false` | Connect automatically for interactive `new`, `resume`, or `startup` session starts; non-interactive subagent and headless sessions are manual-only — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
 | `staticChannel` | boolean | `false` | Keep the channel across sessions (lock read-only on end, reuse on next session) — see above |
 | `channelName` | string | — | Explicit channel name, no date suffix, honored with or without `staticChannel` — see above |
 

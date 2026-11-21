@@ -110,6 +110,19 @@ function makeUi() {
   return { notify: vi.fn(), setStatus: vi.fn() };
 }
 
+function makeAutoStartContext(options: { parentSession?: string; persisted?: boolean; interactive?: boolean } = {}) {
+  const persisted = options.persisted ?? true;
+  return {
+    cwd: "/test-project",
+    ui: makeUi(),
+    hasUI: options.interactive ?? true,
+    sessionManager: {
+      getSessionFile: () => persisted ? "/test-project/session.jsonl" : undefined,
+      getHeader: () => ({ parentSession: options.parentSession }),
+    },
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -122,15 +135,63 @@ describe("Discord client reload handoff", () => {
       autoStart: true,
     });
     const harness = createHarness();
-    const ui = makeUi();
     const before = discord.instances.length;
 
-    await harness.emit("session_start", { reason }, { cwd: "/test-project", ui });
+    await harness.emit("session_start", { reason }, makeAutoStartContext());
 
     expect(discord.instances).toHaveLength(before + 1);
     expect(discord.instances[before].login).toHaveBeenCalledWith("test-token");
     expect(loadEffectiveConfig).toHaveBeenCalledWith("/test-project");
     await harness.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("auto-starts a parent-linked top-level startup session", async () => {
+    vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({
+      token: "test-token",
+      guildId: "guild-1",
+      autoStart: true,
+    });
+    const harness = createHarness();
+    const before = discord.instances.length;
+
+    await harness.emit(
+      "session_start",
+      { reason: "startup" },
+      makeAutoStartContext({ parentSession: "/test-project/previous-root.jsonl" }),
+    );
+
+    expect(discord.instances).toHaveLength(before + 1);
+    await harness.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it.each(["new", "resume", "startup"])("does not auto-start a persisted nested %s session", async (reason) => {
+    vi.mocked(loadEffectiveConfig).mockClear();
+    const harness = createHarness();
+    const before = discord.instances.length;
+
+    await harness.emit(
+      "session_start",
+      { reason },
+      makeAutoStartContext({ parentSession: "/test-project/parent.jsonl", interactive: false }),
+    );
+
+    expect(discord.instances).toHaveLength(before);
+    expect(loadEffectiveConfig).not.toHaveBeenCalled();
+  });
+
+  it.each(["new", "resume", "startup"])("does not auto-start an in-memory %s session", async (reason) => {
+    vi.mocked(loadEffectiveConfig).mockClear();
+    const harness = createHarness();
+    const before = discord.instances.length;
+
+    await harness.emit(
+      "session_start",
+      { reason },
+      makeAutoStartContext({ persisted: false, interactive: false }),
+    );
+
+    expect(discord.instances).toHaveLength(before);
+    expect(loadEffectiveConfig).not.toHaveBeenCalled();
   });
 
   it("adopts the live client without retaining stale pi or ctx callbacks", async () => {
