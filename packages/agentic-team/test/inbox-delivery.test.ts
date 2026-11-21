@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+import teamExtension from "../src/index.ts";
 import { InboxDelivery } from "../src/inbox-delivery.ts";
 import { TeamStore } from "../src/store.ts";
 import type { AgentRegistration } from "../src/types.ts";
@@ -121,6 +124,106 @@ test("startup delivers unread backlog but not messages already read", async (t) 
 	assert.equal(nativeMessages.length, 1);
 	assert.match(nativeMessages[0]!, new RegExp(unread.metadata.id));
 	assert.doesNotMatch(nativeMessages[0]!, new RegExp(read.metadata.id));
+});
+
+test("native inline receipts prevent restart replay while references await inbox reads", async (t) => {
+	const { store, sender, recipient } = await fixture(t);
+	type Handler = (event: any, ctx: ExtensionContext) => unknown;
+	const handlers = new Map<string, Handler[]>();
+	const nativeMessages: Array<Record<string, unknown>> = [];
+	const receiptEvents: Promise<unknown>[] = [];
+	const ctx = {
+		cwd: store.root,
+		hasUI: false,
+		sessionManager: {
+			getSessionId: () => "native-restart-test",
+			getBranch: () => [{
+				type: "custom",
+				customType: "pi-agentic-team-registration",
+				data: { agent_id: recipient.agent_id },
+			}],
+		},
+	} as unknown as ExtensionContext;
+	const pi = {
+		registerMessageRenderer() {},
+		registerCommand() {},
+		registerTool() {},
+		appendEntry() {},
+		on(event: string, handler: Handler) {
+			const registered = handlers.get(event) ?? [];
+			registered.push(handler);
+			handlers.set(event, registered);
+		},
+		sendMessage(message: Record<string, unknown>) {
+			const complete = { ...message, role: "custom" };
+			nativeMessages.push(complete);
+			for (const handler of handlers.get("message_end") ?? []) {
+				receiptEvents.push(Promise.resolve(handler({ message: complete }, ctx)));
+			}
+		},
+	} as unknown as ExtensionAPI;
+	const emit = async (event: string) => {
+		for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
+	};
+	const previousTeamDir = process.env.PI_TEAM_DIR;
+	process.env.PI_TEAM_DIR = store.root;
+	t.after(() => {
+		if (previousTeamDir === undefined) delete process.env.PI_TEAM_DIR;
+		else process.env.PI_TEAM_DIR = previousTeamDir;
+	});
+	teamExtension(pi);
+	await emit("session_start");
+	t.after(() => emit("session_shutdown"));
+
+	const message = await store.sendDirect({
+		from: sender.agent_id,
+		to: recipient.agent_id,
+		body: "Deliver once",
+	});
+	await waitFor(() => nativeMessages.length === 1);
+	await Promise.all(receiptEvents);
+	const [delivered] = await store.readInbox(recipient.agent_id, { messageId: message.metadata.id });
+	assert.equal(delivered?.read_at !== null, true);
+
+	await emit("session_start");
+	assert.equal(nativeMessages.length, 1);
+
+	const reference = await store.sendDirect({
+		from: sender.agent_id,
+		to: recipient.agent_id,
+		body: "Read on demand",
+		delivery: "reference",
+	});
+	await waitFor(() => nativeMessages.length === 2);
+	await Promise.all(receiptEvents);
+	const [unreadReference] = await store.readInbox(recipient.agent_id, { messageId: reference.metadata.id });
+	assert.equal(unreadReference?.read_at, null);
+
+	for (const handler of handlers.get("message_end") ?? []) {
+		await handler({
+			message: {
+				role: "custom",
+				customType: "unrelated-notification",
+				details: { messageId: reference.metadata.id, delivery: "inline" },
+			},
+		}, ctx);
+		await handler({
+			message: {
+				role: "custom",
+				customType: "team-message-notification",
+				details: { senderName: "Team responsibilities" },
+			},
+		}, ctx);
+		await handler({
+			message: {
+				role: "custom",
+				customType: "team-message-notification",
+				details: { messageId: 42 },
+			},
+		}, ctx);
+	}
+	const [stillUnreadReference] = await store.readInbox(recipient.agent_id, { messageId: reference.metadata.id });
+	assert.equal(stillUnreadReference?.read_at, null);
 });
 
 test("terminal input injection is not present in the delivery implementation", async () => {

@@ -19,6 +19,7 @@ const TEAM_NOTIFICATION_TYPE = "team-message-notification";
 interface TeamNotificationDetails {
 	senderName: string;
 	messageId?: string;
+	delivery?: "inline" | "reference";
 }
 
 function toolResult(data: unknown, isError = false) {
@@ -63,7 +64,11 @@ export default function teamExtension(pi: ExtensionAPI) {
 				sendNativeNotification(pi, {
 					customType: TEAM_NOTIFICATION_TYPE,
 					content: prompt,
-					details: { senderName: sender.name, messageId: message.metadata.id },
+					details: {
+						senderName: sender.name,
+						messageId: message.metadata.id,
+						delivery: message.metadata.delivery ?? "inline",
+					},
 				});
 			},
 			(error) => {
@@ -155,15 +160,24 @@ export default function teamExtension(pi: ExtensionAPI) {
 		selfInstanceId = undefined;
 	});
 
-	pi.on("input", async (event) => {
-		if (!selfAgentId) return;
-		const messageId = parseInlineMessageId(event.text);
-		if (!messageId) return;
+	async function recordReceipt(messageId: string | undefined): Promise<void> {
+		if (!selfAgentId || !messageId) return;
 		try {
 			await store.markRead(selfAgentId, messageId);
 		} catch {
 			// A receipt failure must never block delivery of the actual message.
 		}
+	}
+
+	pi.on("input", async (event) => {
+		await recordReceipt(parseInlineMessageId(event.text) ?? undefined);
+	});
+
+	pi.on("message_end", async (event) => {
+		if (event.message.role !== "custom" || event.message.customType !== TEAM_NOTIFICATION_TYPE) return;
+		const details = event.message.details as TeamNotificationDetails | undefined;
+		if (details?.delivery === "reference") return;
+		await recordReceipt(typeof details?.messageId === "string" ? details.messageId : undefined);
 	});
 
 	pi.registerCommand(TEAM_COMMANDS.register, {
