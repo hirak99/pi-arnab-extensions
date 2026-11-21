@@ -23,6 +23,14 @@ Apache-2.0 license copy for standalone package distribution.
 The original repositories remain unchanged. This monorepo's own upstream is
 `origin` (`https://github.com/hirak99/pi-arnab-extensions`).
 
+## Git installation
+
+Install all declared extensions directly from the upstream repository:
+
+```bash
+pi install git:github.com/hirak99/pi-arnab-extensions@main
+```
+
 ## Local installation
 
 Load all declared extensions:
