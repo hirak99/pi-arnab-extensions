@@ -12,11 +12,14 @@ Provides:
   is the consumer's concern; the store enforces storage-layout constraints
   only (channel names, body limits, read semantics).
 - `InboxDelivery`: watches a recipient's inbox and delivers unread messages
-  through a caller-supplied native sender (e.g. Pi's `pi.sendUserMessage`) —
-  never via terminal injection. Delivery format and sender identity are
-  consumer hooks, so different packages keep different semantics over the
-  same proven mechanics: draft-safe, deduplicated, offline-queued and
-  delivered on startup.
+  through a caller-supplied native sender, never via terminal or user-input
+  injection. Delivery format and sender identity are consumer hooks, so
+  different packages keep different semantics over the same proven mechanics:
+  deduplicated, offline-queued and delivered on startup.
+- `sendNativeNotification`: sends a visible custom Pi message with a
+  package-specific renderer, always using `deliverAs="steer"` and
+  `triggerTurn=true`. Pi steers an active run and starts a new run when idle.
+  Neither path uses `pi.sendUserMessage` or modifies the interactive editor.
 
 ## Development
 

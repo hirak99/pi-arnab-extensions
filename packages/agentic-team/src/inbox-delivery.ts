@@ -4,7 +4,11 @@ import { formatInlineMessage } from "./message-format.ts";
 import type { TeamStore } from "./store.ts";
 import type { AgentRegistration, TeamMessage } from "./types.ts";
 
-export type NativeMessageSender = (prompt: string, message: TeamMessage) => void | Promise<void>;
+export type NativeMessageSender = (
+	prompt: string,
+	message: TeamMessage,
+	sender: AgentRegistration,
+) => void | Promise<void>;
 
 function teamHooks(store: TeamStore) {
 	return {

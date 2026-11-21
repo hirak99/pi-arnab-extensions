@@ -7,6 +7,11 @@ export type {
 	WriteMessageInput,
 } from "./types.ts";
 export { InboxDelivery } from "./delivery.ts";
+export { sendNativeNotification } from "./native-notification.ts";
+export type {
+	NativeNotificationApi,
+	NativeNotificationInput,
+} from "./native-notification.ts";
 export type { DeliveryHooks, NativeMessageSender, SenderIdentity } from "./delivery.ts";
 export {
 	MessageStore,

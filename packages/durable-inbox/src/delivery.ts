@@ -5,7 +5,11 @@ import { basename, join } from "node:path";
 import type { MessageStore } from "./store.ts";
 import type { Message } from "./types.ts";
 
-export type NativeMessageSender = (prompt: string, message: Message) => void | Promise<void>;
+export type NativeMessageSender<Sender extends SenderIdentity = SenderIdentity> = (
+	prompt: string,
+	message: Message,
+	sender: Sender,
+) => void | Promise<void>;
 
 export interface SenderIdentity {
 	name: string;
@@ -24,9 +28,9 @@ export interface DeliveryHooks<Sender extends SenderIdentity = SenderIdentity> {
 }
 
 /**
- * Delivers durable inbox messages through a native messaging API (e.g. Pi's
- * pi.sendUserMessage). Never writes to the terminal or an editable prompt
- * buffer; that property belongs to the sender, which the caller supplies.
+ * Delivers durable inbox messages through a native custom-message API (e.g.
+ * pi.sendMessage via sendNativeNotification). Never writes to the terminal or
+ * enters Pi's user-input path.
  */
 export class InboxDelivery<Sender extends SenderIdentity = SenderIdentity> {
 	private watcher: FSWatcher | undefined;
@@ -36,13 +40,13 @@ export class InboxDelivery<Sender extends SenderIdentity = SenderIdentity> {
 	private queue: Promise<void> = Promise.resolve();
 	private readonly store: Pick<MessageStore, "root" | "readInbox">;
 	private readonly hooks: DeliveryHooks<Sender>;
-	private readonly sendPrompt: NativeMessageSender;
+	private readonly sendPrompt: NativeMessageSender<Sender>;
 	private readonly onError: (error: Error) => void;
 
 	constructor(
 		store: Pick<MessageStore, "root" | "readInbox">,
 		hooks: DeliveryHooks<Sender>,
-		sendPrompt: NativeMessageSender,
+		sendPrompt: NativeMessageSender<Sender>,
 		onError: (error: Error) => void = () => undefined,
 	) {
 		this.store = store;
@@ -107,6 +111,6 @@ export class InboxDelivery<Sender extends SenderIdentity = SenderIdentity> {
 		const prompt = delivery === "inline"
 			? this.hooks.formatInline(sender, message)
 			: this.hooks.formatReference(sender, message);
-		await this.sendPrompt(prompt, message);
+		await this.sendPrompt(prompt, message, sender);
 	}
 }

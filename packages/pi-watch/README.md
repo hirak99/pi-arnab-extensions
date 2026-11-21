@@ -40,6 +40,10 @@ Semantics:
   without an extra `on_finish` notice. Logs and script state remain on disk for
   forensics. Pause/resume does not reset the budget; create a new watch after
   automatic removal to re-arm.
+- Notifications are visible custom Pi messages with a compact `[watch]`
+  renderer. Active runs are steered immediately; Pi starts a new run when the
+  session is idle. Delivery never enters the user-input path or modifies an
+  unfinished editor draft.
 - Deliveries are rate-limited (15s floor per watch plus a short grace window
   so bursts coalesce); a rate-limited notification shows the last 3 event
   lines and a "N notifications before this not shown; use watch_tail"
@@ -56,7 +60,7 @@ Semantics:
   previous session's watches. Running processes do not survive a Pi restart
   (v1): reopening the same session shows its watches as stopped until resumed.
   Notifications are delivered through the `pi-durable-inbox` outbox: durable,
-  draft-safe, and queued for session startup.
+  deduplicated, and queued for session startup.
 
 Docs and usage examples (periodic wakeup, file-change notifier, GitHub issue
 watcher) ship in the tool descriptions and guidelines.

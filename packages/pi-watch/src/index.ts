@@ -2,8 +2,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { InboxDelivery, MessageStore } from "pi-durable-inbox";
+import { InboxDelivery, MessageStore, sendNativeNotification } from "pi-durable-inbox";
 
 import { senderIdentity, statusLine } from "./format.ts";
 import { WatchRegistry } from "./registry.ts";
@@ -27,6 +28,12 @@ const TOOL_NAMES = [
 	"watch_remove",
 	"watch_tail",
 ] as const;
+
+const WATCH_NOTIFICATION_TYPE = "watch-notification";
+interface WatchNotificationDetails {
+	senderName: string;
+	messageId: string;
+}
 
 function toolResult(data: unknown) {
 	return {
@@ -81,6 +88,13 @@ export default function watchExtension(pi: ExtensionAPI) {
 	let delivery: InboxDelivery | undefined;
 	let sessionId: string | undefined;
 	let statusUi: ExtensionContext["ui"] | undefined;
+
+	pi.registerMessageRenderer<WatchNotificationDetails>(WATCH_NOTIFICATION_TYPE, (message, _options, theme) => {
+		const details = message.details;
+		const sender = details?.senderName ?? "Watch notification";
+		const id = details?.messageId ? ` ${theme.fg("dim", `(${details.messageId})`)}` : "";
+		return new Text(`${theme.fg("accent", "[watch]")} ${theme.fg("accent", sender)}${id}`, 0, 0);
+	});
 	// Set in session_start if another extension owns one of our tool names.
 	// Every tool call refuses to run, loudly, instead of silently executing a
 	// shadowing foreign tool.
@@ -117,9 +131,12 @@ export default function watchExtension(pi: ExtensionAPI) {
 					return `${sender.name} fired (message ${message.metadata.id}); use watch_tail for output.`;
 				},
 			},
-			(prompt, message) => {
-				if (ctx.isIdle()) pi.sendUserMessage(prompt);
-				else pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+			(prompt, message, sender) => {
+				sendNativeNotification(pi, {
+					customType: WATCH_NOTIFICATION_TYPE,
+					content: prompt,
+					details: { senderName: sender.name, messageId: message.metadata.id },
+				});
 				// Watch notifications are fire-and-forget: acknowledge immediately
 				// so they are not re-delivered as backlog on the next session start.
 				void outbox.markRead(message.metadata.to ?? "", message.metadata.id).catch(() => undefined);

@@ -87,7 +87,7 @@ resume restores the same team UUID with a fresh instance UUID.
 
 This updates the current registered session only. The registry stores a revision
 and update timestamp, and the command sends the revised responsibilities to the
-running agent as a user message or follow-up. Agents can inspect their own
+running agent as a custom notification. Agents can inspect their own
 responsibilities with `team_get_self()` and other agents' responsibilities with
 `team_list_agents()`.
 
@@ -102,7 +102,7 @@ Without a tmux pane, liveness relies on the registered process ID.
 | `team_get_self_uuid` | Return this agent's persistent team UUID |
 | `team_get_self` | Return full identity, registration, transport, and liveness |
 | `team_list_agents` | Discover active agents; optionally include inactive/archived entries |
-| `team_send_message` | Persist a direct message and queue native recipient delivery |
+| `team_send_message` | Persist a direct message and deliver a steering/idle-wakeup notification |
 | `team_read_messages` | Read the current inbox or channel history; inbox reads record receipts |
 | `team_message_status` | Optionally check the read status of a message sent by this agent |
 | `team_post_channel` | Post an asynchronous channel message |
@@ -113,9 +113,10 @@ Without a tmux pane, liveness relies on the registered process ID.
 A sender calls `team_send_message` with the recipient's team UUID and text. The
 extension first verifies that the recipient is active and live, then writes the
 message atomically and returns `wake_status: "queued"`. The recipient's
-in-process inbox watcher uses `pi.sendUserMessage()`; it never pastes into or
-presses Enter in the interactive editor, so an unfinished human draft is left
-untouched. If the agent is busy, Pi queues the message as a follow-up. Unread
+in-process inbox watcher uses a visible custom `pi.sendMessage()` notification
+with a `[team]` renderer; it never enters Pi's user-input path or modifies the
+interactive editor. If the agent is busy, the notification steers the active
+turn immediately. If the agent is idle, Pi starts a new turn. Unread
 messages are also delivered when a registered session starts.
 
 Delivery defaults to `inline`, so the native message includes the sender UUID,
@@ -134,8 +135,8 @@ For sensitive content, use `delivery="reference"`. The native message then
 contains only sender and message metadata; the recipient uses
 `team_read_messages(message_id=...)` to retrieve the body.
 
-Inline messages record a read receipt when the receiving extension accepts the
-input. Reference messages record one when the recipient reads the inbox. The
+Inline messages record a read receipt when the receiving extension sends the
+custom notification. Reference messages record one when the recipient reads the inbox. The
 sender can optionally inspect `team_message_status(message_id=...)`; receipts do
 not wake the sender or start another model turn. The message file remains the
 durable record if native delivery fails; the recipient reports watcher errors in

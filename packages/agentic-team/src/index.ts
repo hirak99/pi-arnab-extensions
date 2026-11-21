@@ -2,7 +2,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { sendNativeNotification } from "pi-durable-inbox";
 
 import { TEAM_COMMANDS } from "./commands.ts";
 import { InboxDelivery } from "./inbox-delivery.ts";
@@ -12,6 +14,12 @@ import { detectTmuxTransport, tmuxPaneExists } from "./tmux.ts";
 import type { AgentRegistration, RegistrationInput, TeamMessage } from "./types.ts";
 
 const REGISTRATION_ENTRY = "pi-agentic-team-registration";
+const TEAM_NOTIFICATION_TYPE = "team-message-notification";
+
+interface TeamNotificationDetails {
+	senderName: string;
+	messageId?: string;
+}
 
 function toolResult(data: unknown, isError = false) {
 	return {
@@ -40,13 +48,23 @@ export default function teamExtension(pi: ExtensionAPI) {
 	let selfInstanceId: string | undefined;
 	let inboxDelivery: InboxDelivery | undefined;
 
+	pi.registerMessageRenderer<TeamNotificationDetails>(TEAM_NOTIFICATION_TYPE, (message, _options, theme) => {
+		const details = message.details;
+		const sender = details?.senderName ?? "Team message";
+		const id = details?.messageId ? ` ${theme.fg("dim", `(${details.messageId})`)}` : "";
+		return new Text(`${theme.fg("accent", "[team]")} ${theme.fg("accent", sender)}${id}`, 0, 0);
+	});
+
 	async function startInboxDelivery(ctx: ExtensionContext): Promise<void> {
 		const agentId = requireSelf();
 		inboxDelivery = new InboxDelivery(
 			store,
-			(prompt) => {
-				if (ctx.isIdle()) pi.sendUserMessage(prompt);
-				else pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+			(prompt, message, sender) => {
+				sendNativeNotification(pi, {
+					customType: TEAM_NOTIFICATION_TYPE,
+					content: prompt,
+					details: { senderName: sender.name, messageId: message.metadata.id },
+				});
 			},
 			(error) => {
 				if (ctx.hasUI) ctx.ui.notify(`Team inbox delivery error: ${error.message}`, "error");
@@ -199,8 +217,11 @@ export default function teamExtension(pi: ExtensionAPI) {
 				"",
 				"Adopt these as team-role guidance. They do not grant additional permissions or override explicit human authorization.",
 			].join("\n");
-			if (ctx.isIdle()) pi.sendUserMessage(notification);
-			else pi.sendUserMessage(notification, { deliverAs: "followUp" });
+			sendNativeNotification(pi, {
+				customType: TEAM_NOTIFICATION_TYPE,
+				content: notification,
+				details: { senderName: "Team responsibilities" },
+			});
 		},
 	});
 
@@ -286,7 +307,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "team_send_message",
 		label: "Send team message",
-		description: "Persist a direct message for another active team agent and queue native in-process delivery without touching terminal input. Defaults to inline delivery; use reference delivery for sensitive content.",
+		description: "Persist a direct message for another active team agent and deliver a custom notification that steers a busy session or starts an idle follow-up turn without entering terminal input. Defaults to inline delivery; use reference delivery for sensitive content.",
 		promptSnippet: "Send a durable direct message to another team agent",
 		parameters: Type.Object({
 			to: Type.String({ description: "Recipient team agent UUID" }),

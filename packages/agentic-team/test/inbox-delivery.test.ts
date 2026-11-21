@@ -43,7 +43,7 @@ test("native inbox delivery leaves an unfinished editor draft untouched", async 
 	const nativeMessages: string[] = [];
 	const errors: Error[] = [];
 	const delivery = new InboxDelivery(store, (prompt) => {
-		// Models pi.sendUserMessage(): no terminal writes and no draft mutation.
+		// Models the native sender callback: no terminal writes or draft mutation.
 		nativeMessages.push(prompt);
 	}, (error) => errors.push(error));
 	await delivery.start(registrationId(recipient));
@@ -129,5 +129,7 @@ test("terminal input injection is not present in the delivery implementation", a
 	const tmux = await readFile(new URL("tmux.ts", sourceRoot), "utf8");
 	assert.doesNotMatch(index, /wakeTmuxAgent|paste-buffer|send-keys/);
 	assert.doesNotMatch(tmux, /wakeTmuxAgent|paste-buffer|send-keys/);
-	assert.match(index, /pi\.sendUserMessage\(prompt/);
+	assert.doesNotMatch(index, /pi\.sendUserMessage/);
+	assert.match(index, /sendNativeNotification\(pi, \{/);
+	assert.match(index, /registerMessageRenderer<TeamNotificationDetails>/);
 });
