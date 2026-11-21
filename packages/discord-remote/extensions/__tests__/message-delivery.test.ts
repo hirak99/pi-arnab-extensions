@@ -190,6 +190,10 @@ function textMessage(role: "assistant" | "user", text: string) {
   return { message: { role, content: [{ type: "text", text }] } };
 }
 
+function customMessage(customType: string, content: unknown, display = true) {
+  return { message: { role: "custom", customType, content, display } };
+}
+
 const DIVIDER = "────────────────────";
 
 describe("append-only transcript delivery", () => {
@@ -202,6 +206,58 @@ describe("append-only transcript delivery", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("mirrors generic custom messages with string, text-block, and empty content", async () => {
+    const harness = createHarness();
+    await harness.start();
+
+    await harness.emit(
+      "message_end",
+      customMessage("team-message-notification", "Team message from Dev Agent 1"),
+    );
+    await harness.emit(
+      "message_end",
+      customMessage("extension-content", [
+        { type: "text", text: "first" },
+        { type: "image", data: "not-mirrored", mimeType: "image/png" },
+        { type: "text", text: " second" },
+      ]),
+    );
+    await harness.emit("message_end", customMessage("extension-empty", undefined));
+
+    expect(discord.sent).toEqual([
+      "🔔 **team-message-notification**\nTeam message from Dev Agent 1",
+      "🔔 **extension-content**\nfirst second",
+      "🔔 **extension-empty**",
+    ]);
+  });
+
+  it("hides non-displayable custom messages and avoids duplicate background completion notices", async () => {
+    const harness = createHarness();
+    await harness.start();
+
+    await harness.emit("message_end", customMessage("private-extension-state", "hidden", false));
+    await harness.emit(
+      "message_end",
+      customMessage("background-task-notification", "<background-task-notification>raw XML</background-task-notification>"),
+    );
+    expect(discord.sent).toEqual([]);
+
+    await harness.emitBus(
+      BG_TERMINAL,
+      terminalBackgroundTask({ id: "build-check", name: "Build check", status: "completed" }),
+    );
+    expect(discord.sent).toEqual(["✅ Finished: Build check"]);
+  });
+
+  it("does not mirror custom messages when echo is disabled", async () => {
+    discord.echo = false;
+    const harness = createHarness();
+    await harness.start();
+
+    await harness.emit("message_end", customMessage("watch-notification", "Watch fired"));
+    expect(discord.sent).toEqual([]);
   });
 
   it("posts A, steering B, and C independently in transcript order", async () => {

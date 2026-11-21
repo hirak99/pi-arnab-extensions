@@ -755,6 +755,32 @@ export default function (pi: ExtensionAPI) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const content = event.message.content as Array<any>;
 
+    // Mirror displayable custom messages generically so Discord tracks the
+    // same extension notifications as the CLI. Background completions already
+    // have a dedicated terminal-event mirror, so suppress that duplicate.
+    if (event.message.role === "custom") {
+      if (event.message.display === false || event.message.customType === "background-task-notification") return;
+      if (!activeConfig?.echo || !client || !runtime.activeChannelId) return;
+      const raw = event.message.content;
+      const text = typeof raw === "string"
+        ? raw
+        : Array.isArray(raw)
+          ? raw
+              .filter((c: any) => c.type === "text" && typeof c.text === "string")
+              .map((c: any) => c.text as string)
+              .join("")
+          : "";
+      const customType = activityLabel(
+        typeof event.message.customType === "string" ? event.message.customType : undefined,
+        "custom",
+      );
+      const body = text.trim() ? `\n${text.trim()}` : "";
+      for (const chunk of splitMessage(`🔔 **${customType}**${body}`)) {
+        await sendActivityStatus(chunk);
+      }
+      return;
+    }
+
     if (event.message.role === "user") {
       const text = content
         .filter((c) => c.type === "text" && typeof c.text === "string")

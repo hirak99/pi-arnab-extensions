@@ -72,13 +72,19 @@ By default the channel only shows turns that started in Discord. With
   sender's completion mention in that footer
 - tool-call starts post as short, emoji-labeled summaries alongside the replies;
   tool results are never mirrored
+- every displayable Pi custom message is posted as `🔔 **customType**`, followed
+  by its text content when present. String content and text content blocks are
+  supported; an empty custom message still posts its type. Messages with
+  `display: false` are not mirrored. Background-task custom notifications are
+  excluded because the dedicated background terminal-event integration below
+  already posts concise, deduplicated completion notices even when echo is off
 
 Messages sent from Discord are not echoed back — the channel already shows
 them.
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `echo` | boolean | `false` | Mirror terminal-originated turns into the Discord channel |
+| `echo` | boolean | `false` | Mirror terminal-originated turns and displayable custom messages into the Discord channel |
 
 ### Steering (mid-turn messages)
 
