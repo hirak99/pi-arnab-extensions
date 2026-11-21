@@ -190,8 +190,8 @@ function textMessage(role: "assistant" | "user", text: string) {
   return { message: { role, content: [{ type: "text", text }] } };
 }
 
-function customMessage(customType: string, content: unknown, display = true) {
-  return { message: { role: "custom", customType, content, display } };
+function customMessage(customType: string, content: unknown, display = true, details?: unknown) {
+  return { message: { role: "custom", customType, content, display, details } };
 }
 
 const DIVIDER = "────────────────────";
@@ -208,29 +208,61 @@ describe("append-only transcript delivery", () => {
     vi.useRealTimers();
   });
 
-  it("mirrors generic custom messages with string, text-block, and empty content", async () => {
+  it("mirrors generic custom-message metadata without exposing content or arbitrary details", async () => {
     const harness = createHarness();
     await harness.start();
 
     await harness.emit(
       "message_end",
-      customMessage("team-message-notification", "Team message from Dev Agent 1"),
+      customMessage(
+        "team-message-notification",
+        "private team body",
+        true,
+        { senderName: "Dev Agent 1", messageId: "83c747d3-a941-43df-a7d0-06f87aa5b594" },
+      ),
     );
     await harness.emit(
       "message_end",
-      customMessage("extension-content", [
-        { type: "text", text: "first" },
-        { type: "image", data: "not-mirrored", mimeType: "image/png" },
-        { type: "text", text: " second" },
-      ]),
+      customMessage(
+        "subagent-notification",
+        [{ type: "text", text: "private subagent body" }],
+        true,
+        { description: "Inspect authentication flow", status: "completed", id: "agent-123456789" },
+      ),
     );
-    await harness.emit("message_end", customMessage("extension-empty", undefined));
+    await harness.emit(
+      "message_end",
+      customMessage(
+        "watch-notification",
+        "private watch body",
+        true,
+        { senderName: "delivery-test", messageId: "f1b54347-aa49-45f4-bc5e-ceb88371b5e5" },
+      ),
+    );
+    await harness.emit(
+      "message_end",
+      customMessage("deployment-notice", "private deployment body", true, {
+        name: "deploy-42",
+        status: "completed",
+      }),
+    );
+    await harness.emit(
+      "message_end",
+      customMessage("extension-empty", undefined, true, {
+        unexpected: "must not appear",
+        nested: { secret: "must not appear either" },
+      }),
+    );
 
     expect(discord.sent).toEqual([
-      "🔔 **team-message-notification**\nTeam message from Dev Agent 1",
-      "🔔 **extension-content**\nfirst second",
+      "🔔 **team-message-notification** · Dev Agent 1 · 83c747d3…",
+      "🔔 **subagent-notification** · Inspect authentication flow · completed · agent-12…",
+      "🔔 **watch-notification** · delivery-test · f1b54347…",
+      "🔔 **deployment-notice** · deploy-42 · completed",
       "🔔 **extension-empty**",
     ]);
+    expect(discord.sent.join("\n")).not.toContain("private");
+    expect(discord.sent.join("\n")).not.toContain("must not appear");
   });
 
   it("hides non-displayable custom messages and avoids duplicate background completion notices", async () => {

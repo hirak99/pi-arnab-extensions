@@ -203,6 +203,29 @@ export default function (pi: ExtensionAPI) {
     return label.length > 80 ? label.slice(0, 80) + "…" : label;
   }
 
+  function customNotificationLabel(customType: unknown, details: unknown): string {
+    const type = activityLabel(typeof customType === "string" ? customType : undefined, "custom");
+    const record = details !== null && typeof details === "object" && !Array.isArray(details)
+      ? details as Record<string, unknown>
+      : {};
+    const stringDetail = (...keys: string[]): string | undefined => {
+      for (const key of keys) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+      return undefined;
+    };
+    const label = stringDetail("senderName", "description", "name");
+    const status = stringDetail("status");
+    const identifier = stringDetail("messageId", "id");
+    const summary = [
+      label ? activityLabel(label, "") : undefined,
+      status ? activityLabel(status, "") : undefined,
+      identifier ? `${identifier.length > 12 ? `${identifier.slice(0, 8)}…` : identifier}` : undefined,
+    ].filter((value): value is string => value !== undefined);
+    return `🔔 **${type}**${summary.length ? ` · ${summary.join(" · ")}` : ""}`;
+  }
+
   // Display name for a subagent: its short task description wins, falling
   // back to the agent type, then to a generic label.
   function subagentLabel(meta: RunningSubagent | undefined): string {
@@ -761,21 +784,8 @@ export default function (pi: ExtensionAPI) {
     if (event.message.role === "custom") {
       if (event.message.display === false || event.message.customType === "background-task-notification") return;
       if (!activeConfig?.echo || !client || !runtime.activeChannelId) return;
-      const raw = event.message.content;
-      const text = typeof raw === "string"
-        ? raw
-        : Array.isArray(raw)
-          ? raw
-              .filter((c: any) => c.type === "text" && typeof c.text === "string")
-              .map((c: any) => c.text as string)
-              .join("")
-          : "";
-      const customType = activityLabel(
-        typeof event.message.customType === "string" ? event.message.customType : undefined,
-        "custom",
-      );
-      const body = text.trim() ? `\n${text.trim()}` : "";
-      for (const chunk of splitMessage(`🔔 **${customType}**${body}`)) {
+      const notification = customNotificationLabel(event.message.customType, event.message.details);
+      for (const chunk of splitMessage(notification)) {
         await sendActivityStatus(chunk);
       }
       return;
