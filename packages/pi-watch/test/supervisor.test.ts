@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -373,4 +373,101 @@ test("scripts receive WATCH_STATE and per-run state survives across ticks", asyn
 	await waitFor(() => events.length >= 2, "second stateful tick");
 	assert.match(events[0]!, /tick 0/);
 	assert.match(events[1]!, /tick 1/);
+});
+
+test("full shutdown auto-resumes running watches only in their exact owning session", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-watch-resume-"));
+	const marker = join(await mkdtemp(join(tmpdir(), "pi-watch-marker-")), "count");
+	const registry = new WatchRegistry(root);
+	const supervisors: WatchSupervisor[] = [];
+	const makeSupervisor = () => {
+		const supervisor = new WatchSupervisor(registry, async () => {}, { minEverySeconds: 1 });
+		supervisors.push(supervisor);
+		return supervisor;
+	};
+	t.after(async () => {
+		for (const supervisor of supervisors) await supervisor.shutdown();
+		await rm(root, { recursive: true, force: true });
+	});
+
+	const first = makeSupervisor();
+	const definition = await first.create({
+		name: "owned",
+		mode: "poll",
+		run: `n=$(cat ${marker} 2>/dev/null || echo 0); echo $((n+1)) > ${marker}; exit 0`,
+		everySeconds: 3600,
+		initialDelaySeconds: 2,
+		sessionId: SESSION,
+	});
+	await first.shutdown();
+	assert.equal((await registry.loadState(definition.id))!.status, "running", "shutdown preserves running intent");
+
+	const unrelated = makeSupervisor();
+	assert.deepEqual(await unrelated.restore("another-session"), []);
+	assert.equal((await registry.loadState(definition.id))!.status, "running", "other-session restore does not overwrite intent");
+	await assert.rejects(readFile(marker, "utf8"), /ENOENT/, "other session does not start the command");
+
+	const resumed = makeSupervisor();
+	assert.deepEqual((await resumed.restore(SESSION)).map((item) => item.id), [definition.id]);
+	assert.notEqual(resumed.get("owned", SESSION).state.next_run_at, null, "future schedule survives restore");
+	await assert.rejects(readFile(marker, "utf8"), /ENOENT/, "future watch does not fire immediately on resume");
+	await waitFor(async () => (await readFile(marker, "utf8").catch(() => "")).trim() === "1", "owning-session auto-resume at the remaining schedule");
+	assert.equal(resumed.get("owned", SESSION).state.status, "running");
+});
+
+test("paused watches stay paused across full restart until watch_resume", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-watch-paused-"));
+	const marker = join(await mkdtemp(join(tmpdir(), "pi-watch-marker-")), "count");
+	const registry = new WatchRegistry(root);
+	const first = new WatchSupervisor(registry, async () => {}, { minEverySeconds: 1 });
+	const second = new WatchSupervisor(registry, async () => {}, { minEverySeconds: 1 });
+	t.after(async () => {
+		await first.shutdown();
+		await second.shutdown();
+		await rm(root, { recursive: true, force: true });
+	});
+
+	await first.create({
+		name: "paused",
+		mode: "poll",
+		run: `echo ran >> ${marker}; exit 0`,
+		everySeconds: 3600,
+		initialDelaySeconds: 60,
+		sessionId: SESSION,
+	});
+	await first.pause("paused", SESSION);
+	await first.shutdown();
+	await second.restore(SESSION);
+	await delay(100);
+	assert.equal(second.get("paused", SESSION).state.status, "paused");
+	await assert.rejects(readFile(marker, "utf8"), /ENOENT/);
+
+	await second.resume("paused", SESSION);
+	await waitFor(async () => (await readFile(marker, "utf8").catch(() => "")).includes("ran"), "manual resume still works");
+});
+
+test("cleanly completed streams stay stopped across full restart", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-watch-clean-"));
+	const marker = join(await mkdtemp(join(tmpdir(), "pi-watch-marker-")), "count");
+	const registry = new WatchRegistry(root);
+	const first = new WatchSupervisor(registry, async () => {}, { minEverySeconds: 1 });
+	const second = new WatchSupervisor(registry, async () => {}, { minEverySeconds: 1 });
+	t.after(async () => {
+		await first.shutdown();
+		await second.shutdown();
+		await rm(root, { recursive: true, force: true });
+	});
+
+	await first.create({
+		name: "completed",
+		mode: "stream",
+		run: `echo ran >> ${marker}; exit 0`,
+		sessionId: SESSION,
+	});
+	await waitFor(() => first.get("completed", SESSION).state.status === "stopped", "clean completion");
+	await first.shutdown();
+	await second.restore(SESSION);
+	await delay(150);
+	assert.equal(second.get("completed", SESSION).state.status, "stopped");
+	assert.equal((await readFile(marker, "utf8")).trim().split("\n").length, 1, "completed command did not rerun");
 });

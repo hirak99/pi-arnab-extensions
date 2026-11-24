@@ -60,18 +60,19 @@ interface SupervisorOptions {
 }
 
 /**
- * Owns watch processes and notification semantics. Runs inside the Pi
- * process (v1: watches do not survive Pi restarts; definitions do).
+ * Owns watch processes and notification semantics. Live supervisors bridge
+ * in-process reloads; full shutdown persists running intent for exact-session
+ * auto-resume.
  */
 export class WatchSupervisor {
 	private readonly registry: WatchRegistry;
-	private readonly deliver: Deliver;
+	private deliver: Deliver;
 	private readonly eventRateFloorMs: number;
 	private readonly graceMs: number;
 	private readonly streamBackoffBaseMs: number;
 	private readonly streamBackoffMaxMs: number;
 	private readonly minEverySeconds: number;
-	private readonly onStateChange: (() => void) | undefined;
+	private onStateChange: (() => void) | undefined;
 	private readonly entries = new Map<string, WatchEntry>();
 
 	constructor(registry: WatchRegistry, deliver: Deliver, options: SupervisorOptions = {}) {
@@ -85,19 +86,43 @@ export class WatchSupervisor {
 		this.onStateChange = options.onStateChange;
 	}
 
-	/** Called on session start: load definitions from disk, all stopped (v1: no auto-resume). */
-	async restore(): Promise<WatchDefinition[]> {
-		const definitions = await this.registry.listDefinitions();
+	/** Rebind extension-owned callbacks when /reload adopts this live supervisor. */
+	rebind(deliver: Deliver, onStateChange: (() => void) | undefined): void {
+		this.deliver = deliver;
+		this.onStateChange = onStateChange;
+	}
+
+	/**
+	 * Cold-start only the exact owning session. A persisted running status is
+	 * durable intent: full Pi shutdown preserves it, and exact-session resume
+	 * starts it again. Other sessions' definitions and state files are untouched.
+	 */
+	async restore(sessionId: string): Promise<WatchDefinition[]> {
+		const definitions = (await this.registry.listDefinitions()).filter((definition) => definition.session_id === sessionId);
+		const resume: WatchEntry[] = [];
 		for (const definition of definitions) {
 			const loaded = await this.registry.loadState(definition.id);
 			const state = loaded ? { ...initialRuntimeState("stopped"), ...loaded } : initialRuntimeState("stopped");
-			state.status = "stopped";
 			state.pid = null;
-			state.next_run_at = null;
-			this.entries.set(definition.id, this.newEntry(definition, state));
+			const entry = this.newEntry(definition, state);
+			this.entries.set(definition.id, entry);
 			await this.registry.saveState(definition.id, state);
+			if (state.status === "running") resume.push(entry);
 		}
 		this.onStateChange?.();
+		for (const entry of resume) {
+			const nextRunMs = entry.state.next_run_at ? Date.parse(entry.state.next_run_at) : Number.NaN;
+			const remainingMs = Number.isFinite(nextRunMs) ? nextRunMs - Date.now() : 0;
+			if (remainingMs > 0) {
+				entry.timer = setTimeout(() => {
+					entry.state.next_run_at = null;
+					void this.startEntry(entry);
+				}, remainingMs);
+			} else {
+				entry.state.next_run_at = null;
+				void this.startEntry(entry);
+			}
+		}
 		return definitions;
 	}
 
@@ -233,10 +258,13 @@ export class WatchSupervisor {
 		return this.registry.readLogTail(entry.definition.id, maxLines);
 	}
 
-	/** Kill everything; called on session shutdown. Definitions persist as stopped. */
+	/**
+	 * Full process shutdown: stop scripts without erasing running intent. Reload
+	 * does not call this path; it hands the live supervisor to the new runtime.
+	 */
 	async shutdown(): Promise<void> {
 		for (const entry of this.entries.values()) {
-			await this.stopEntry(entry, "stopped");
+			await this.stopEntry(entry, entry.state.status, true);
 		}
 	}
 
@@ -438,8 +466,9 @@ export class WatchSupervisor {
 		void this.registry.saveState(entry.definition.id, entry.state);
 	}
 
-	private async stopEntry(entry: WatchEntry, status: WatchRuntimeState["status"]): Promise<void> {
+	private async stopEntry(entry: WatchEntry, status: WatchRuntimeState["status"], preserveNextRun = false): Promise<void> {
 		entry.intentionalStop = true;
+		const nextRunAt = preserveNextRun ? entry.state.next_run_at : null;
 		if (entry.timer) clearTimeout(entry.timer);
 		if (entry.flushTimer) clearTimeout(entry.flushTimer);
 		entry.timer = null;
@@ -451,11 +480,16 @@ export class WatchSupervisor {
 		entry.lineReaders = [];
 		entry.state.status = status;
 		entry.state.pid = null;
-		entry.state.next_run_at = null;
+		entry.state.next_run_at = nextRunAt;
 		await this.flushPending(entry);
 		await this.registry.saveState(entry.definition.id, entry.state);
 		this.onStateChange?.();
-		await this.registry.appendLog(entry.definition.id, `[status]: watch ${status}`).catch(() => undefined);
+		await this.registry.appendLog(
+			entry.definition.id,
+			status === "running"
+				? "[status]: stopped for session shutdown; exact-session auto-resume armed"
+				: `[status]: watch ${status}`,
+		).catch(() => undefined);
 	}
 
 	private async broke(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null, reason: string | undefined): Promise<void> {

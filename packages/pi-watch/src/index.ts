@@ -35,6 +35,27 @@ interface WatchNotificationDetails {
 	messageId: string;
 }
 
+interface WatchReloadBridge {
+	supervisor: WatchSupervisor;
+	sessionId: string;
+	root: string;
+}
+
+// /reload replaces the extension runtime in the same Pi process. Keep the
+// supervisor itself alive so watch scripts, timers, and in-memory rate limiting
+// continue without a stop/start cycle. Full process shutdown never uses this.
+const WATCH_RELOAD_BRIDGE_KEY = Symbol.for("pi-watch.reload-bridge");
+
+function takeWatchReloadBridge(): WatchReloadBridge | null {
+	const bridge = (Reflect.get(globalThis, WATCH_RELOAD_BRIDGE_KEY) ?? null) as WatchReloadBridge | null;
+	Reflect.deleteProperty(globalThis, WATCH_RELOAD_BRIDGE_KEY);
+	return bridge;
+}
+
+function storeWatchReloadBridge(bridge: WatchReloadBridge): void {
+	Reflect.set(globalThis, WATCH_RELOAD_BRIDGE_KEY, bridge);
+}
+
 function toolResult(data: unknown) {
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -50,7 +71,8 @@ function toWatchError(error: unknown): never {
 const DECISION_RULE =
 	"If the command finishes quickly and answers \"did it happen? yes/no\", use watch_create_poll (the exit code speaks: 0 = silence, non-zero = notification with its output). " +
 	"If the command runs continuously and announces things as they happen, use watch_create_stream (each stdout line speaks; only stdout can notify, stderr is captured to the watch log). " +
-	"Watches are durable: definitions persist until watch_remove or automatic removal at max_events.";
+	"Watches are durable: definitions persist until watch_remove or automatic removal at max_events. " +
+	"Running watches survive /reload without interruption and auto-resume after a full Pi restart only in their owning session, preserving any remaining scheduled delay; commands must be idempotent and use $WATCH_STATE for checkpoints.";
 
 const USAGE_GUIDANCE =
 	"Watches are best suited for recurring alerts or continuous monitoring. " +
@@ -80,10 +102,12 @@ export default function watchExtension(pi: ExtensionAPI) {
 	// Runtime-only sender identities let inbox rendering keep a watch's name
 	// after max_events auto-removal without retaining an active definition.
 	const knownWatches = new Map<string, WatchDefinition>();
-	const supervisor = new WatchSupervisor(registry, async (watch, body) => {
+	const deliver = async (watch: WatchDefinition, body: string) => {
 		knownWatches.set(watch.id, watch);
 		await outbox.sendDirect({ from: `watch:${watch.id}`, to: watch.session_id, body });
-	}, { onStateChange: () => refreshWatchStatus() });
+	};
+	const onStateChange = () => refreshWatchStatus();
+	let supervisor = new WatchSupervisor(registry, deliver, { onStateChange });
 	let statusApiUnsub: (() => void) | undefined = registerWatchStatusApi(pi, () => supervisor.list(owningSessionId()));
 	let delivery: InboxDelivery | undefined;
 	let sessionId: string | undefined;
@@ -170,20 +194,37 @@ export default function watchExtension(pi: ExtensionAPI) {
 		await delivery?.stop();
 		delivery = undefined;
 		knownWatches.clear();
-		const definitions = await supervisor.restore();
+		const nextSessionId = ctx.sessionManager.getSessionId();
+		const bridge = takeWatchReloadBridge();
+		let definitions: WatchDefinition[];
+		if (bridge && _event?.reason === "reload" && bridge.sessionId === nextSessionId && bridge.root === root) {
+			supervisor = bridge.supervisor;
+			supervisor.rebind(deliver, onStateChange);
+			definitions = supervisor.list(nextSessionId).map(({ definition }) => definition);
+		} else {
+			// A mismatched abandoned bridge must never leak processes into another
+			// session. Its shutdown preserves intent for its own later resume.
+			if (bridge) await bridge.supervisor.shutdown();
+			definitions = await supervisor.restore(nextSessionId);
+		}
 		for (const definition of definitions) knownWatches.set(definition.id, definition);
 		await startDelivery(ctx);
 		statusUi = ctx.hasUI ? ctx.ui : undefined;
 		refreshWatchStatus();
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (event) => {
 		statusUi?.setStatus("pi-watch", undefined);
 		statusUi = undefined;
+		const previousSessionId = sessionId;
 		sessionId = undefined;
 		statusApiUnsub?.();
 		statusApiUnsub = undefined;
-		await supervisor.shutdown();
+		if (event?.reason === "reload" && previousSessionId) {
+			storeWatchReloadBridge({ supervisor, sessionId: previousSessionId, root });
+		} else {
+			await supervisor.shutdown();
+		}
 		await delivery?.stop();
 		delivery = undefined;
 	});
@@ -256,6 +297,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 			"For a one-shot stream alert, set max_events=1: the first matching stdout line is delivered, then the watch is automatically removed.",
 			`Use watch_create_poll for quick yes/no checks instead; ${DECISION_RULE}`,
 			"Only stdout can notify; use stderr for diagnostics you want logged but never delivered.",
+			"Full Pi/system restart relaunches stream commands from the beginning; checkpoint any required time-sensitive progress in $WATCH_STATE.",
 		],
 		executionMode: "sequential",
 		parameters: Type.Object({
@@ -287,7 +329,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "watch_list",
 		label: "List watches",
-		description: "List the current session's watches with mode, status, and scheduling details. Definitions persist across Pi restarts and remain bound to their owning session; running processes do not (restarting the same session shows its watches as stopped until resumed).",
+		description: "List the current session's watches with mode, status, and scheduling details. Running watches survive /reload without interruption and auto-resume after a full Pi restart only in their owning session; paused and stopped watches remain inactive.",
 		promptSnippet: "List the current session's durable watches and their statuses",
 		parameters: Type.Object({}),
 		async execute() {
@@ -335,7 +377,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "watch_pause",
 		label: "Pause watch",
-		description: "Pause a watch: stop its script and suspend scheduling. Events are not generated while paused.",
+		description: "Pause a watch: stop its script and suspend scheduling. Events are not generated while paused. Paused watches do not auto-resume on reload or restart.",
 		executionMode: "sequential",
 		parameters: Type.Object({
 			name: Type.String({ description: "Watch name" }),

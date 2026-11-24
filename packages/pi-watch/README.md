@@ -49,21 +49,36 @@ Semantics:
   lines and a "N notifications before this not shown; use watch_tail"
   trailer. The full stream is always in the log.
 - Scripts get a private state directory in `$WATCH_STATE` (plus `WATCH_ID`,
-  `WATCH_NAME`, `WATCH_MODE`). Keep cursors there so restarts do not
-  re-notify.
+  `WATCH_NAME`, `WATCH_MODE`). Watch commands must be idempotent; keep cursors
+  in `$WATCH_STATE` so restarts do not re-notify old events. Full restart
+  relaunches stream commands; checkpoint time-sensitive progress there.
 - The Pi footer shows `👀 N/M watchers active` for the current session, with a
   `· X broken` suffix only when needed. The status item is hidden entirely when
   the session has no watches.
 - Definitions persist on disk under `~/.pi/pi-watch/` (override with
-  `PI_WATCH_DIR`) and remain bound to their owning session ID. A new session,
-  including one started in the same directory, does not list or control a
-  previous session's watches. Running processes do not survive a Pi restart
-  (v1): reopening the same session shows its watches as stopped until resumed.
-  Notifications are delivered through the `pi-durable-inbox` outbox: durable,
-  deduplicated, and queued for session startup.
+  `PI_WATCH_DIR`) and remain bound to their owning session ID. Running watches
+  survive `/reload` without a process stop/start cycle. On a full Pi shutdown
+  their scripts stop, and resuming the exact owning session automatically
+  starts them again while preserving any remaining scheduled delay; overdue
+  checks run immediately. Paused, explicitly stopped, and cleanly completed
+  watches remain inactive. `watch_resume` remains available for manual re-arming.
+  A new session, including one started in the same directory, neither lists nor
+  auto-resumes a previous session's watches. Notifications are delivered
+  through the `pi-durable-inbox` outbox: durable, deduplicated, and queued for
+  session startup.
 
 Docs and usage examples (periodic wakeup, file-change notifier, GitHub issue
 watcher) ship in the tool descriptions and guidelines.
+
+## Process durability design
+
+**Maintainer design decision:** do not use `nohup` or otherwise try to keep
+watch processes alive across a Pi restart. Treat every full Pi restart as if it
+were a full system restart: recovery must work when every old process is gone.
+Persist only definitions, running intent, schedules, and `$WATCH_STATE`, then
+create fresh processes on exact-session resume. The sole process-preserving
+path is an in-process `/reload` supervisor handoff. Changing this design
+requires Arnab's explicit authorization.
 
 ## Development
 

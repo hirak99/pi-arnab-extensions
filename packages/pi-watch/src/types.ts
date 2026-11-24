@@ -3,8 +3,9 @@ export type WatchMode = "poll" | "stream";
 export type WatchStatus = "running" | "paused" | "stopped";
 
 /**
- * A watch definition is everything needed to recreate the watch: durable on
- * disk, survives Pi restarts (the definition, not the running process).
+ * A watch definition is everything needed to recreate the watch. Running
+ * processes survive in-process reload through a supervisor handoff; full Pi
+ * restart recreates only watches with persisted running intent.
  */
 export interface WatchDefinition {
 	id: string;
@@ -29,7 +30,7 @@ export interface WatchDefinition {
 	created_at: string;
 }
 
-/** Volatile runtime state, persisted for watch_list/watch_tail status lines. */
+/** Runtime state persisted for status, plus running intent across full shutdown. */
 export interface WatchRuntimeState {
 	status: WatchStatus;
 	pid: number | null;

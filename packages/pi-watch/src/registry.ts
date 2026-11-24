@@ -6,8 +6,8 @@ import type { WatchDefinition, WatchRuntimeState } from "./types.ts";
 
 /**
  * Durable registry: definitions and runtime state are plain JSON files under
- * the watch root, so `watch_list` works even after a Pi restart (definitions
- * persist; running processes do not — v1 by design).
+ * the watch root. Cold restore is exact-session scoped; running state records
+ * the intent to auto-resume after a full Pi restart.
  */
 export class WatchRegistry {
 	readonly root: string;
