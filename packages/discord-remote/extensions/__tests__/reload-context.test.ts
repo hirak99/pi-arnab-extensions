@@ -68,7 +68,7 @@ import { loadEffectiveConfig } from "../config.js";
 
 type EventHandler = (event: any, ctx?: any) => Promise<unknown>;
 
-function createHarness() {
+function createHarness(extension: typeof registerExtension = registerExtension) {
   const handlers = new Map<string, EventHandler>();
   const busHandlers = new Map<string, (event: any) => unknown>();
   let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
@@ -90,7 +90,7 @@ function createHarness() {
     sendUserMessage: vi.fn(),
   };
 
-  registerExtension(pi as any);
+  extension(pi as any);
 
   return {
     pi,
@@ -117,6 +117,7 @@ function makeAutoStartContext(options: { parentSession?: string; persisted?: boo
     ui: makeUi(),
     hasUI: options.interactive ?? true,
     sessionManager: {
+      getSessionId: () => "session-1",
       getSessionFile: () => persisted ? "/test-project/session.jsonl" : undefined,
       getHeader: () => ({ parentSession: options.parentSession }),
     },
@@ -124,6 +125,7 @@ function makeAutoStartContext(options: { parentSession?: string; persisted?: boo
 }
 
 afterEach(() => {
+  Reflect.deleteProperty(globalThis, Symbol.for("pi-discord-remote.reload-bridge"));
   vi.restoreAllMocks();
 });
 
@@ -197,13 +199,15 @@ describe("Discord client reload handoff", () => {
   it("adopts the live client without retaining stale pi or ctx callbacks", async () => {
     const first = createHarness();
     const oldUi = makeUi();
-    await first.start({ cwd: "/test-project", ui: oldUi });
+    await first.start({ ...makeAutoStartContext(), ui: oldUi });
     const client = discord.instances[discord.instances.length - 1];
     expect(client.listenerCount("messageCreate")).toBe(1);
     expect(client.listenerCount("error")).toBe(1);
 
     await first.emit("session_shutdown", { reason: "reload" });
     expect(client.listenerCount("messageCreate")).toBe(0);
+    const storedBridge = Reflect.get(globalThis, Symbol.for("pi-discord-remote.reload-bridge"));
+    expect(storedBridge).toMatchObject({ sessionId: "session-1", root: "/test-project" });
     expect(client.listenerCount("error")).toBe(0);
     expect(client.listenerCount("shardDisconnect")).toBe(0);
     expect(client.destroy).not.toHaveBeenCalled();
@@ -217,9 +221,11 @@ describe("Discord client reload handoff", () => {
     });
 
     const instanceCount = discord.instances.length;
-    const second = createHarness();
+    const freshSpecifier = "../index.js?fresh-module-adoption";
+    const freshExtension = (await import(freshSpecifier)).default;
+    const second = createHarness(freshExtension);
     const newUi = makeUi();
-    await second.emit("session_start", { reason: "reload" }, { cwd: "/test-project", ui: newUi });
+    await second.emit("session_start", { reason: "reload" }, { ...makeAutoStartContext(), ui: newUi });
 
     expect(discord.instances).toHaveLength(instanceCount);
     expect(client.listenerCount("messageCreate")).toBe(1);
@@ -254,11 +260,47 @@ describe("Discord client reload handoff", () => {
     expect(client.destroy).toHaveBeenCalledOnce();
   });
 
+  it("auto-starts an interactive reload when no bridge exists", async () => {
+    vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({
+      token: "test-token",
+      guildId: "guild-1",
+      autoStart: true,
+    });
+    const freshSpecifier = "../index.js?reload-without-bridge";
+    const freshExtension = (await import(freshSpecifier)).default;
+    const harness = createHarness(freshExtension);
+    const before = discord.instances.length;
+
+    await harness.emit("session_start", { reason: "reload" }, makeAutoStartContext());
+
+    expect(discord.instances).toHaveLength(before + 1);
+    expect(discord.instances[before].login).toHaveBeenCalledWith("test-token");
+    expect(loadEffectiveConfig).toHaveBeenCalledWith("/test-project");
+    await harness.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("does not auto-start a non-interactive reload without a bridge", async () => {
+    vi.mocked(loadEffectiveConfig).mockClear();
+    const freshSpecifier = "../index.js?headless-reload-without-bridge";
+    const freshExtension = (await import(freshSpecifier)).default;
+    const harness = createHarness(freshExtension);
+    const before = discord.instances.length;
+
+    await harness.emit(
+      "session_start",
+      { reason: "reload" },
+      makeAutoStartContext({ interactive: false }),
+    );
+
+    expect(discord.instances).toHaveLength(before);
+    expect(loadEffectiveConfig).not.toHaveBeenCalled();
+  });
+
   it("forces a reconnect when the bridged client is not ready after reload", async () => {
     vi.useFakeTimers();
     try {
       const first = createHarness();
-      await first.start({ cwd: "/test-project", ui: makeUi() });
+      await first.start(makeAutoStartContext());
       const before = discord.instances.length;
       const client = discord.instances[before - 1];
       client.isReady.mockReturnValue(false);
@@ -266,7 +308,7 @@ describe("Discord client reload handoff", () => {
       await first.emit("session_shutdown", { reason: "reload" });
 
       const second = createHarness();
-      await second.emit("session_start", { reason: "reload" }, { cwd: "/test-project", ui: makeUi() });
+      await second.emit("session_start", { reason: "reload" }, makeAutoStartContext());
       expect(discord.instances).toHaveLength(before);
 
       // Grace period elapses; the unhealthy bridged client must be replaced.

@@ -68,11 +68,26 @@ interface ReloadBridge {
   config: Config;
   activeChannelId: string | null;
   sessionChannelName: string | null;
+  sessionId: string | null;
+  root: string;
+}
+
+const RELOAD_BRIDGE_KEY = Symbol.for("pi-discord-remote.reload-bridge");
+
+function takeReloadBridge(): ReloadBridge | null {
+  const bridge = (Reflect.get(globalThis, RELOAD_BRIDGE_KEY) ?? null) as ReloadBridge | null;
+  Reflect.deleteProperty(globalThis, RELOAD_BRIDGE_KEY);
+  return bridge;
+}
+
+function storeReloadBridge(bridge: ReloadBridge): void {
+  Reflect.set(globalThis, RELOAD_BRIDGE_KEY, bridge);
 }
 
 // Pi creates a new extension runtime on /reload. Keep only the live transport
 // across that boundary; old listeners and contexts must never survive it.
-let reloadBridge: ReloadBridge | null = null;
+let activeSessionId: string | null = null;
+let activeRoot: string | null = null;
 
 // ─── Extension ────────────────────────────────────────────────────────────────
 
@@ -1043,16 +1058,17 @@ export default function (pi: ExtensionAPI) {
   // so children (including in-memory children) never create independent
   // Discord mirrors. This deliberately avoids parentSession lineage checks:
   // legitimate top-level handoffs and forks also carry parentSession.
-  // Headless sessions are manual-only. "reload" keeps the existing client —
-  // session_shutdown deliberately preserves it across reloads.
+  // Headless sessions are manual-only. "reload" adopts the same-session
+  // bridged client, or falls through to autoStart when no bridge exists.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("session_start", async (event: any, ctx: any) => {
     connectNotify = (msg, level) => ctx.ui.notify(msg, level);
     connectSetStatus = (key, val) => ctx.ui.setStatus(key, val);
+    activeSessionId = ctx.sessionManager?.getSessionId?.() ?? null;
+    activeRoot = ctx?.cwd ?? process.cwd();
+    const preserved = takeReloadBridge();
     if (event?.reason === "reload") {
-      const preserved = reloadBridge;
-      reloadBridge = null;
-      if (preserved) {
+      if (preserved && preserved.sessionId === activeSessionId && preserved.root === activeRoot) {
         client = preserved.client;
         activeConfig = preserved.config;
         runtime.activeChannelId = preserved.activeChannelId;
@@ -1076,10 +1092,12 @@ export default function (pi: ExtensionAPI) {
             scheduleReconnect();
           }
         }, RELOAD_LIVENESS_GRACE_MS);
+        return;
       }
-      return;
+      // No valid bridge: an interactive reload may still auto-start below.
     }
-    if (event?.reason !== "new" && event?.reason !== "resume" && event?.reason !== "startup") return;
+    if (preserved) await preserved.client.destroy().catch(() => {});
+    if (event?.reason !== "new" && event?.reason !== "resume" && event?.reason !== "startup" && event?.reason !== "reload") return;
     if (!ctx?.hasUI) return;
     if (client) return;
     const cfg = await loadEffectiveConfig(ctx?.cwd);
@@ -1350,12 +1368,14 @@ export default function (pi: ExtensionAPI) {
           console.error("[pi-discord-remote] Client alive without config during reload; destroying it");
           await client.destroy().catch(() => {});
         } else {
-          reloadBridge = {
+          storeReloadBridge({
             client,
             config: activeConfig,
             activeChannelId: runtime.activeChannelId,
             sessionChannelName: runtime.sessionChannelName,
-          };
+            sessionId: activeSessionId,
+            root: activeRoot ?? process.cwd(),
+          });
           client.removeAllListeners();
         }
         client = null;
@@ -1366,6 +1386,8 @@ export default function (pi: ExtensionAPI) {
       connectNotify = null;
       connectSetStatus = null;
       isShuttingDown = false;
+      activeSessionId = null;
+      activeRoot = null;
       return;
     }
     if (client) {
@@ -1376,6 +1398,8 @@ export default function (pi: ExtensionAPI) {
       runtime.activeChannelId = null;
       runtime.sessionChannelName = null;
     }
+    activeSessionId = null;
+    activeRoot = null;
   });
 
   function attachClientHandlers(target: Client): void {
@@ -1963,6 +1987,8 @@ export default function (pi: ExtensionAPI) {
           // Project overrides (.pi/discord-remote.json) win over the global
           // config — autoStart is the usual per-project key, but a project
           // can also pin its own categoryId/guildId here.
+          activeSessionId = ctx.sessionManager?.getSessionId?.() ?? null;
+          activeRoot = ctx.cwd;
           const cfg = await loadEffectiveConfig(ctx.cwd);
           if (!cfg) {
             ctx.ui.notify("No config found. Run /pi-discord-remote setup first.", "error");

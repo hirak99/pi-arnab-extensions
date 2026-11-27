@@ -37,8 +37,9 @@ ln -sfn ~/git/pi-discord-remote ~/.pi/agent/extensions/pi-discord-remote
 /pi-discord-remote start
 ```
 
-Note: pi's `/reload` does **not** pick up rebuilt extension code (module
-caching). After `npm run build`, restart pi, then `/pi-discord-remote start`.
+Note: pi's `/reload` loads fresh extension modules. This package preserves an
+existing Discord client through a same-session global bridge; a full Pi restart
+creates a new client.
 
 Fork-only config keys used below: `displayNames`, `echo`, `steer`,
 `autoStart`, `staticChannel`, `channelName`. For day-to-day operations — reconnecting after a reboot,
@@ -224,7 +225,7 @@ only needs to live in the global config. Details:
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `autoStart` | boolean | `false` | Connect automatically for interactive `new`, `resume`, or `startup` session starts; non-interactive subagent and headless sessions are manual-only (intended as a per-project opt-in via `.pi/discord-remote.json`) |
+| `autoStart` | boolean | `false` | Connect automatically for interactive `new`, `resume`, or `startup` session starts, and for `reload` when no live client is bridged; non-interactive subagent and headless sessions are manual-only (intended as a per-project opt-in via `.pi/discord-remote.json`) |
 
 ### Static channels
 
@@ -338,7 +339,7 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `categoryId` | string | — | Optional category for auto-created channels |
 | `allowedUserIds` | string[] | `[]` | Allow-list of Discord user IDs (empty = everyone) |
 | `reactions` | boolean | `true` | React with ⏳ while processing |
-| `autoStart` | boolean | `false` | Connect automatically for interactive `new`, `resume`, or `startup` session starts; non-interactive subagent and headless sessions are manual-only — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
+| `autoStart` | boolean | `false` | Connect automatically for interactive `new`, `resume`, or `startup` session starts, and for `reload` when no live client is bridged; non-interactive subagent and headless sessions are manual-only — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
 | `staticChannel` | boolean | `false` | Keep the channel across sessions (lock read-only on end, reuse on next session) — see above |
 | `channelName` | string | — | Explicit channel name, no date suffix, honored with or without `staticChannel` — see above |
 
