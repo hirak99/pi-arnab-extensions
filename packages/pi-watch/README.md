@@ -21,6 +21,9 @@ Two modes, one contract each:
 
 Shared lifecycle and observability:
 
+Creation returns only `Watch created.`; use the inspection tools when current
+state is needed rather than receiving a redundant definition echo.
+
 - `watch_list`, `watch_inspect`, `watch_pause`, `watch_resume`, `watch_remove`
   operate only on watches owned by the current Pi session. Watch names must be
   unique within a session; different sessions may reuse the same name.

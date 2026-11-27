@@ -79,10 +79,11 @@ test("reload preserves the live watch process; full restart auto-resumes it", as
 	const first = createHarness();
 	harnesses.push(first);
 	await first.start("startup");
-	await first.call("watch_create_stream", {
+	const created = await first.call("watch_create_stream", {
 		name: "continuity",
 		run: `echo $$ >> ${marker}; while true; do sleep 1; done`,
 	});
+	assert.deepEqual(created.content, [{ type: "text", text: "Watch created." }]);
 	const inspect = async (harness: ReturnType<typeof createHarness>) =>
 		(await harness.call("watch_inspect", { name: "continuity" })).details;
 	await waitFor(async () => (await inspect(first)).state.pid !== null, "initial stream PID");

@@ -272,7 +272,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 		guardConflicts();
 			try {
-				const definition = await supervisor.create({
+				await supervisor.create({
 					name: params.name,
 					mode: "poll",
 					run: params.run,
@@ -282,7 +282,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 					maxEvents: params.max_events,
 					sessionId: ctx.sessionManager.getSessionId(),
 				});
-				return toolResult({ watch: definition });
+				return { content: [{ type: "text" as const, text: "Watch created." }], details: { created: true } };
 			} catch (error) {
 				toWatchError(error);
 			}
@@ -321,7 +321,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 		guardConflicts();
 			try {
-				const definition = await supervisor.create({
+				await supervisor.create({
 					name: params.name,
 					mode: "stream",
 					run: params.run,
@@ -330,7 +330,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 					maxEvents: params.max_events,
 					sessionId: ctx.sessionManager.getSessionId(),
 				});
-				return toolResult({ watch: definition });
+				return { content: [{ type: "text" as const, text: "Watch created." }], details: { created: true } };
 			} catch (error) {
 				toWatchError(error);
 			}

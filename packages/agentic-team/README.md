@@ -75,6 +75,7 @@ team_register(duties="...", name="optional-name")
 team_register(duties="...", teams=["dev", "ops"])  # optional multi-team membership
 ```
 
+The tool returns only the generated team agent UUID needed for routing.
 Registration captures the Pi session ID, CWD, process ID, and tmux pane when
 available. Tmux is used only for pane liveness checks, never for message input.
 The registration identity is persisted in the Pi session, so a clean reload or

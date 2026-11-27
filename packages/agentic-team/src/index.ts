@@ -278,7 +278,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const registration = await registerCurrent(ctx, params.duties, params.name, params.teams);
-			return toolResult(registration);
+			return toolResult({ agent_id: registration.agent_id });
 		},
 	});
 
@@ -340,7 +340,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 				selfInstanceId = undefined;
 				pi.appendEntry(REGISTRATION_ENTRY, { agent_id: null });
 			}
-			return toolResult({ deleted, channel_history_preserved: true, inbox_preserved: true });
+			return toolResult({ deleted: deleted.agent_id, inbox_preserved: true });
 		},
 	});
 
