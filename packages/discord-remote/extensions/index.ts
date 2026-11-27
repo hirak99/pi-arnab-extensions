@@ -1060,7 +1060,7 @@ export default function (pi: ExtensionAPI) {
         isShuttingDown = false;
         attachClientHandlers(client);
         const channelLabel = runtime.sessionChannelName ?? runtime.activeChannelId ?? "unknown";
-        connectSetStatus("pi-discord-remote", colorStatus(`🔌 Discord: #${channelLabel}`, "success"));
+        connectSetStatus("pi-discord-remote", colorStatus(`💬 Discord: #${channelLabel}`, "success"));
         // The bridged socket may have died during the reload window (or a
         // reconnect may already have failed before it). Give an in-flight
         // login a grace period, then verify liveness and force a reconnect
@@ -1232,7 +1232,7 @@ export default function (pi: ExtensionAPI) {
       const channelLabel = runtime.sessionChannelName ?? runtime.activeChannelId ?? "unknown";
       console.log(`[pi-discord-remote] Reconnected successfully → #${channelLabel}`);
       notify(`✅ Discord reconnected → #${channelLabel}`, "success");
-      setStatus("pi-discord-remote", colorStatus(`🔌 Discord: #${channelLabel}`, "success"));
+      setStatus("pi-discord-remote", colorStatus(`💬 Discord: #${channelLabel}`, "success"));
 
       // Post a notice in the channel so the user knows we're back
       if (runtime.activeChannelId) {
@@ -1529,7 +1529,7 @@ export default function (pi: ExtensionAPI) {
             }
           }
 
-          const label = `🔌 Discord: #${runtime.sessionChannelName ?? channelName}`;
+          const label = `💬 Discord: #${runtime.sessionChannelName ?? channelName}`;
           connectNotify?.(
             resumed
               ? `Reusing #${runtime.sessionChannelName} (static channel)`
@@ -1545,14 +1545,14 @@ export default function (pi: ExtensionAPI) {
             "warning",
           );
           runtime.activeChannelId = cfg.channelId ?? null;
-          connectSetStatus?.("pi-discord-remote", colorStatus(`🔌 Discord: ${c.user.tag} (fallback)`, "success"));
+          connectSetStatus?.("pi-discord-remote", colorStatus(`💬 Discord: ${c.user.tag} (fallback)`, "success"));
         }
         resolve();
       });
     });
 
     try {
-      connectSetStatus?.("pi-discord-remote", colorStatus("🔌 Discord: connecting…", "info"));
+      connectSetStatus?.("pi-discord-remote", colorStatus("💬 Discord: connecting…", "info"));
       await client.login(cfg.token);
       await readyPromise;
     } catch (err: any) {

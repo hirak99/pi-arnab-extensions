@@ -227,7 +227,7 @@ describe("Discord client reload handoff", () => {
     expect(client.listenerCount("shardDisconnect")).toBe(1);
     expect(newUi.setStatus).toHaveBeenCalledWith(
       "pi-discord-remote",
-      expect.stringMatching(/🔌 Discord: #test-project-/),
+      expect.stringMatching(/💬 Discord: #test-project-/),
     );
 
     expect(() => client.emit("error", new Error("network failure"))).not.toThrow();

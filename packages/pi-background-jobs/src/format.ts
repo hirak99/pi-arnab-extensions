@@ -6,12 +6,18 @@ export function formatJobsStatus(tasks: JobTask[], unseenFinished: JobTask[]): s
 	const failed = unseenFinished.filter((task) => task.status === "failed").length;
 	const killed = unseenFinished.filter((task) => task.status === "killed").length;
 	if (running + done + failed + killed === 0) return undefined;
-	const parts: string[] = [];
-	if (running) parts.push(`${running} running`);
-	if (failed) parts.push(`${failed} failed`);
-	if (killed) parts.push(`${killed} stopped`);
-	if (done) parts.push(`${done} done`);
-	return ` jobs ${parts.join(" · ")} · /jobs `;
+	const parts: Array<{ count: number; label: string }> = [];
+	if (running) parts.push({ count: running, label: "running" });
+	if (failed) parts.push({ count: failed, label: "failed" });
+	if (killed) parts.push({ count: killed, label: "stopped" });
+	if (done) parts.push({ count: done, label: "done" });
+	const [first, ...rest] = parts;
+	if (!first) return undefined;
+	const summary = [
+		`${first.count} ${first.count === 1 ? "job" : "jobs"} ${first.label}`,
+		...rest.map(({ count, label }) => `${count} ${label}`),
+	].join(" · ");
+	return `🧵 ${summary} · /jobs`;
 }
 
 export function formatJobList(tasks: JobTask[]): string {

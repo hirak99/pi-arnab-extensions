@@ -172,9 +172,17 @@ test("footer status distinguishes running and unseen terminal jobs", async () =>
 		status: "running",
 	};
 	assert.equal(formatJobsStatus([], []), undefined);
-	assert.equal(formatJobsStatus([base], []), " jobs 1 running · /jobs ");
+	assert.equal(formatJobsStatus([base], []), "🧵 1 job running · /jobs");
+	assert.equal(
+		formatJobsStatus([base, { ...base, id: "job-2" }], []),
+		"🧵 2 jobs running · /jobs",
+	);
+	assert.equal(
+		formatJobsStatus([{ ...base, status: "completed" }], [{ ...base, status: "completed" }]),
+		"🧵 1 job done · /jobs",
+	);
 	assert.equal(
 		formatJobsStatus([base], [{ ...base, status: "failed" }, { ...base, status: "completed" }]),
-		" jobs 1 running · 1 failed · 1 done · /jobs ",
+		"🧵 1 job running · 1 failed · 1 done · /jobs",
 	);
 });
