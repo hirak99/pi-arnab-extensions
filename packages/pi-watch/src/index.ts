@@ -145,7 +145,8 @@ export default function watchExtension(pi: ExtensionAPI) {
 			...(paused > 0 ? [{ text: `${paused} paused`, tone: "warning" as const }] : []),
 			...(broken > 0 ? [{ text: `${broken} broken`, tone: "error" as const }] : []),
 		];
-		statusUi.setStatus("pi-watch", text ? colorStatus(text, active > 0 ? "info" : "standard", process.env, highlights) : undefined);
+		const tone = active === watches.length ? "info" : "warning";
+		statusUi.setStatus("pi-watch", text ? colorStatus(text, tone, process.env, highlights) : undefined);
 	}
 
 	async function startDelivery(ctx: ExtensionContext): Promise<void> {

@@ -187,6 +187,6 @@ test("footer status distinguishes running jobs and aggregates unseen finished jo
 			{ ...base, status: "completed" },
 			{ ...base, status: "killed" },
 		]),
-		"🧵 1 job running · 3 finished · /jobs",
+		"🧵 1 of 4 jobs running · /jobs",
 	);
 });

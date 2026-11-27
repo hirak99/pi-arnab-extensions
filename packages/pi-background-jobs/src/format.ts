@@ -5,8 +5,9 @@ export function formatJobsStatus(tasks: JobTask[], unseenFinished: JobTask[]): s
 	const finished = unseenFinished.length;
 	if (running + finished === 0) return undefined;
 	const parts: string[] = [];
-	if (running) parts.push(`${running} ${running === 1 ? "job" : "jobs"} running`);
-	if (finished) parts.push(`${finished} finished`);
+	if (running && finished) parts.push(`${running} of ${running + finished} jobs running`);
+	else if (running) parts.push(`${running} ${running === 1 ? "job" : "jobs"} running`);
+	if (finished && !running) parts.push(`${finished} finished`);
 	return `🧵 ${parts.join(" · ")} · /jobs`;
 }
 

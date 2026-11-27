@@ -55,9 +55,10 @@ Semantics:
 - The Pi footer shows `👀 N/M watchers active` for the current session, with
   `· X paused` and `· X broken` suffixes only when needed. Paused uses yellow
   foreground and persistent broken state uses red foreground. The entire status
-  item has a blue background while any watcher is active and no background when
-  none are active. It is hidden entirely when the session has no watches;
-  `NO_COLOR` disables all ANSI styling.
+  item is blue when every retained watcher is active and amber whenever any
+  watcher is inactive, including when all are stopped with no suffix. It is
+  hidden entirely when the session has no watches; `NO_COLOR` disables all ANSI
+  styling.
 - Definitions persist on disk under `~/.pi/pi-watch/` (override with
   `PI_WATCH_DIR`) and remain bound to their owning session ID. Running watches
   survive `/reload` without a process stop/start cycle. On a full Pi shutdown

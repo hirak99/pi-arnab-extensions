@@ -52,8 +52,9 @@ returns immediately. Completion starts a native follow-up turn; do not poll
 OS permissions and are not sandboxed.
 
 The footer shows running counts and aggregates unseen completed, failed, and
-killed jobs as `N finished`. This aggregation is statusbar-only: `/jobs` and the
-agent tools retain individual outcomes. `/jobs` lists the jobs and clears their
+killed jobs as `N finished`. When running and finished jobs are both present,
+the footer combines them as `N of M jobs running`. This presentation is
+statusbar-only: `/jobs` and the agent tools retain individual outcomes. `/jobs` lists the jobs and clears their
 unseen footer notices. `/jobs clear` permanently removes all completed, failed,
 and killed jobs owned by the current session, including their metadata and
 output logs. Running jobs are untouched. Cleanup is a human command only; no
