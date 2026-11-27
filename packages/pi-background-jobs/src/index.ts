@@ -7,6 +7,7 @@ import { Type } from "typebox";
 
 import { formatJobList, formatJobsStatus, jobNotificationText } from "./format.ts";
 import { registerJobStatusApi } from "./status-api.ts";
+import { colorStatus } from "./status-color.ts";
 import { JobSupervisor } from "./supervisor.ts";
 import type { JobTask } from "./types.ts";
 
@@ -74,10 +75,17 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 
 	function refreshStatus(): void {
 		if (!statusUi || !sessionId) return;
-		statusUi.setStatus(
-			"pi-background-jobs",
-			formatJobsStatus(supervisor.list(sessionId), supervisor.unseenFinished(sessionId)),
-		);
+		const tasks = supervisor.list(sessionId);
+		const unseen = supervisor.unseenFinished(sessionId);
+		const text = formatJobsStatus(tasks, unseen);
+		const tone = unseen.some((task) => task.status === "failed")
+			? "error"
+			: unseen.some((task) => task.status === "killed")
+				? "warning"
+				: tasks.some((task) => task.status === "running")
+					? "info"
+					: "success";
+		statusUi.setStatus("pi-background-jobs", text ? colorStatus(text, tone) : undefined);
 	}
 
 	function guardConflicts(): void {

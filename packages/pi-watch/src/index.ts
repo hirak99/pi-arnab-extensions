@@ -9,6 +9,7 @@ import { InboxDelivery, MessageStore, sendNativeNotification } from "pi-durable-
 import { senderIdentity, statusLine } from "./format.ts";
 import { WatchRegistry } from "./registry.ts";
 import { registerWatchStatusApi } from "./status-api.ts";
+import { colorStatus } from "./status-color.ts";
 import { formatWatcherStatus } from "./status.ts";
 import { WatchSupervisor, WatchError } from "./supervisor.ts";
 import {
@@ -135,7 +136,14 @@ export default function watchExtension(pi: ExtensionAPI) {
 
 	function refreshWatchStatus(): void {
 		if (!statusUi || !sessionId) return;
-		statusUi.setStatus("pi-watch", formatWatcherStatus(supervisor.list(sessionId)));
+		const watches = supervisor.list(sessionId);
+		const text = formatWatcherStatus(watches);
+		const tone = watches.some(({ state }) => state.broken)
+			? "error"
+			: watches.every(({ state }) => state.status !== "running")
+				? "warning"
+				: "info";
+		statusUi.setStatus("pi-watch", text ? colorStatus(text, tone) : undefined);
 	}
 
 	async function startDelivery(ctx: ExtensionContext): Promise<void> {

@@ -55,7 +55,9 @@ The footer shows running counts and unseen terminal results. `/jobs` lists the
 jobs and clears their unseen footer notices. `/jobs clear` permanently removes
 all completed, failed, and killed jobs owned by the current session, including
 their metadata and output logs. Running jobs are untouched. Cleanup is a human
-command only; no model-callable deletion tool is exposed.
+command only; no model-callable deletion tool is exposed. Status pills are blue
+while running, green for completed-only, amber for stopped, and red for failures.
+Set `NO_COLOR` to disable ANSI styling.
 
 ## Lifecycle and storage
 

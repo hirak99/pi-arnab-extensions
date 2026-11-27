@@ -54,7 +54,8 @@ Semantics:
   relaunches stream commands; checkpoint time-sensitive progress there.
 - The Pi footer shows `👀 N/M watchers active` for the current session, with a
   `· X broken` suffix only when needed. The status item is hidden entirely when
-  the session has no watches.
+  the session has no watches. The pill is blue when healthy, amber when no
+  watcher is running, and red when broken; `NO_COLOR` disables ANSI styling.
 - Definitions persist on disk under `~/.pi/pi-watch/` (override with
   `PI_WATCH_DIR`) and remain bound to their owning session ID. Running watches
   survive `/reload` without a process stop/start cycle. On a full Pi shutdown

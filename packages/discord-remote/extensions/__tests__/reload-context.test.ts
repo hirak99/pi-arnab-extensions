@@ -227,11 +227,14 @@ describe("Discord client reload handoff", () => {
     expect(client.listenerCount("shardDisconnect")).toBe(1);
     expect(newUi.setStatus).toHaveBeenCalledWith(
       "pi-discord-remote",
-      expect.stringMatching(/^🔌 Discord: #test-project-/),
+      expect.stringMatching(/🔌 Discord: #test-project-/),
     );
 
     expect(() => client.emit("error", new Error("network failure"))).not.toThrow();
-    expect(newUi.setStatus).toHaveBeenCalledWith("pi-discord-remote", "⚠️ Discord: error");
+    expect(newUi.setStatus).toHaveBeenCalledWith(
+      "pi-discord-remote",
+      expect.stringContaining("⚠️ Discord: error"),
+    );
     expect(oldUi.setStatus).not.toHaveBeenCalled();
 
     const incoming = {

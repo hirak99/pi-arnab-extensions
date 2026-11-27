@@ -92,6 +92,7 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	const originalPid = started.pid;
 	assert.ok(originalPid);
 	assert.match(first.statuses.at(-1) ?? "", /1 running/);
+	assert.match(first.statuses.at(-1) ?? "", /48;2;183;223;255/);
 
 	await first.shutdown("reload");
 	assert.equal([...first.busHandlers.values()].reduce((sum, handlers) => sum + handlers.size, 0), 0);
@@ -108,6 +109,7 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	assert.equal(second.notifications[0].customType, "background-job-finished");
 	assert.equal(second.notifications[0].details.status, "completed");
 	assert.match(second.statuses.at(-1) ?? "", /1 done/);
+	assert.match(second.statuses.at(-1) ?? "", /48;2;183;235;190/);
 	assert.match(await readFile(started.output_path, "utf8"), /finished\n/);
 	await second.command();
 	assert.equal(second.statuses.at(-1), undefined, "/jobs clears unseen terminal footer state");

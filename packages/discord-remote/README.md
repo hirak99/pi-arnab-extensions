@@ -119,6 +119,10 @@ automatically. Refreshing stops at `agent_end`, on disconnect, and during
 shutdown. Discord has no explicit stop-typing API, so an already-sent indicator
 can linger briefly after work finishes.
 
+The Discord footer status uses a soft green pill when connected, blue while
+connecting, amber while reconnecting, and red for connection failures. Set
+`NO_COLOR` to disable ANSI styling.
+
 ### Interruptions
 
 When `agent_settled` reports `aborted: true`, the persistent session channel

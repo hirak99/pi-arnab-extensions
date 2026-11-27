@@ -53,6 +53,7 @@ import {
   withTimeout,
   formatErrorForDiscord,
 } from "./helpers.js";
+import { colorStatus } from "./status-color.js";
 
 // ─── Reconnection constants ──────────────────────────────────────────────────
 const RECONNECT_BASE_DELAY_MS = 2_000;
@@ -1059,7 +1060,7 @@ export default function (pi: ExtensionAPI) {
         isShuttingDown = false;
         attachClientHandlers(client);
         const channelLabel = runtime.sessionChannelName ?? runtime.activeChannelId ?? "unknown";
-        connectSetStatus("pi-discord-remote", `🔌 Discord: #${channelLabel}`);
+        connectSetStatus("pi-discord-remote", colorStatus(`🔌 Discord: #${channelLabel}`, "success"));
         // The bridged socket may have died during the reload window (or a
         // reconnect may already have failed before it). Give an in-flight
         // login a grace period, then verify liveness and force a reconnect
@@ -1157,7 +1158,7 @@ export default function (pi: ExtensionAPI) {
         `❌ Discord reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts. Run /pi-discord-remote start to retry.`,
         "error",
       );
-      connectSetStatus?.("pi-discord-remote", "❌ Discord: reconnect failed");
+      connectSetStatus?.("pi-discord-remote", colorStatus("❌ Discord: reconnect failed", "error"));
       return;
     }
 
@@ -1169,7 +1170,7 @@ export default function (pi: ExtensionAPI) {
     console.log(
       `[pi-discord-remote] Reconnect attempt ${reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS} in ${Math.round(delay)}ms`,
     );
-    connectSetStatus?.("pi-discord-remote", `🔄 Discord: reconnecting (${reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS})…`);
+    connectSetStatus?.("pi-discord-remote", colorStatus(`🔄 Discord: reconnecting (${reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS})…`, "warning"));
 
     reconnectTimer = setTimeout(async () => {
       if (isShuttingDown) return;
@@ -1205,13 +1206,13 @@ export default function (pi: ExtensionAPI) {
     client.on("messageCreate", buildMessageHandler());
     client.on("error", (err) => {
       console.error("[pi-discord-remote] Discord client error:", err);
-      setStatus("pi-discord-remote", "⚠️ Discord: error");
+      setStatus("pi-discord-remote", colorStatus("⚠️ Discord: error", "error"));
     });
     client.on("shardDisconnect", () => {
       stopDiscordTyping();
       if (isShuttingDown) return;
       console.error("[pi-discord-remote] Discord WebSocket disconnected during reconnect, retrying…");
-      setStatus("pi-discord-remote", "🔄 Discord: reconnecting…");
+      setStatus("pi-discord-remote", colorStatus("🔄 Discord: reconnecting…", "warning"));
       scheduleReconnect();
     });
 
@@ -1231,7 +1232,7 @@ export default function (pi: ExtensionAPI) {
       const channelLabel = runtime.sessionChannelName ?? runtime.activeChannelId ?? "unknown";
       console.log(`[pi-discord-remote] Reconnected successfully → #${channelLabel}`);
       notify(`✅ Discord reconnected → #${channelLabel}`, "success");
-      setStatus("pi-discord-remote", `🔌 Discord: #${channelLabel}`);
+      setStatus("pi-discord-remote", colorStatus(`🔌 Discord: #${channelLabel}`, "success"));
 
       // Post a notice in the channel so the user knows we're back
       if (runtime.activeChannelId) {
@@ -1381,13 +1382,13 @@ export default function (pi: ExtensionAPI) {
     target.on("messageCreate", buildMessageHandler());
     target.on("error", (err) => {
       console.error("[pi-discord-remote] Discord client error:", err);
-      connectSetStatus?.("pi-discord-remote", "⚠️ Discord: error");
+      connectSetStatus?.("pi-discord-remote", colorStatus("⚠️ Discord: error", "error"));
     });
     target.on("shardDisconnect", () => {
       stopDiscordTyping();
       if (isShuttingDown) return;
       console.error("[pi-discord-remote] Discord WebSocket disconnected, starting reconnect…");
-      connectSetStatus?.("pi-discord-remote", "🔄 Discord: reconnecting…");
+      connectSetStatus?.("pi-discord-remote", colorStatus("🔄 Discord: reconnecting…", "warning"));
       scheduleReconnect();
     });
   }
@@ -1535,7 +1536,7 @@ export default function (pi: ExtensionAPI) {
               : `Connected as ${c.user.tag} → #${channelName}`,
             "success",
           );
-          connectSetStatus?.("pi-discord-remote", label);
+          connectSetStatus?.("pi-discord-remote", colorStatus(label, "success"));
         } catch (err) {
           // Channel creation failed — fall back to configured channelId
           console.error("[pi-discord-remote] Could not create channel:", err);
@@ -1544,14 +1545,14 @@ export default function (pi: ExtensionAPI) {
             "warning",
           );
           runtime.activeChannelId = cfg.channelId ?? null;
-          connectSetStatus?.("pi-discord-remote", `🔌 Discord: ${c.user.tag} (fallback)`);
+          connectSetStatus?.("pi-discord-remote", colorStatus(`🔌 Discord: ${c.user.tag} (fallback)`, "success"));
         }
         resolve();
       });
     });
 
     try {
-      connectSetStatus?.("pi-discord-remote", "🔌 Discord: connecting…");
+      connectSetStatus?.("pi-discord-remote", colorStatus("🔌 Discord: connecting…", "info"));
       await client.login(cfg.token);
       await readyPromise;
     } catch (err: any) {
