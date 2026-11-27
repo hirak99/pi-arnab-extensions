@@ -3,6 +3,8 @@
 Focused background shell jobs for Pi. Four tools, durable output, automatic
 completion notifications, a session footer, and no agent/provider subsystems.
 
+**Related project:** I’ve used [`pi-background-tasks`](https://pi.dev/packages/pi-background-tasks), and it manages background tasks very well—do take a look, especially if you also need delegated agents, Fusion workflows, attested runs, or Anthropic attribution. This smaller package simply reflects my own preferences: [`pi-subagents`](https://github.com/tintinweb/pi-subagents) already handles agents, I only need run/status/logs/kill here, and every job survives `/reload` by default.
+
 ## Features
 
 - `job_run`, `job_status`, `job_logs`, and `job_kill`
