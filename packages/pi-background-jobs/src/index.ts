@@ -11,7 +11,7 @@ import { colorStatus } from "./status-color.ts";
 import { JobSupervisor } from "./supervisor.ts";
 import type { JobTask } from "./types.ts";
 
-const TOOL_NAMES = ["job_run", "job_status", "job_logs", "job_kill"] as const;
+const TOOL_NAMES = ["job_run", "job_status", "job_logs", "job_kill", "job_clear"] as const;
 const JOB_NOTIFICATION_TYPE = "background-job-finished";
 const RELOAD_BRIDGE_KEY = Symbol.for("pi-background-jobs.supervisor");
 
@@ -151,7 +151,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 			const action = args.trim();
 			if (action === "clear") {
 				const removed = await supervisor.clearFinished(currentSession);
-				ctx.ui.notify(`Removed ${removed} finished job${removed === 1 ? "" : "s"}.`, "info");
+				ctx.ui.notify(`Removed ${removed.length} finished job${removed.length === 1 ? "" : "s"}.`, "info");
 				return;
 			}
 			if (action) {
@@ -241,6 +241,38 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 			guardConflicts();
 			const task = await supervisor.kill(params.taskId, owningSessionId());
 			return toolResult({ task, output: task.output_path });
+		},
+	});
+
+	pi.registerTool({
+		name: "job_clear",
+		label: "Clear finished background jobs",
+		description: "Permanently delete metadata and output logs for one finished job, or every finished job owned by this session. Running jobs are never deleted. Provide exactly one of taskId or allFinished:true.",
+		promptSnippet: "Permanently clear finished background-job records and logs",
+		promptGuidelines: [
+			"Clear jobs only when their output is no longer needed; deletion is permanent.",
+			"Do not clear failed jobs before their logs have been inspected or deliberately deemed unnecessary.",
+			"A running job cannot be cleared. Use job_kill first only when stopping it is intended, then clear it after it reaches a terminal state.",
+		],
+		parameters: Type.Object({
+			taskId: Type.Optional(Type.String({ description: "Exact job ID or unique prefix for one finished job" })),
+			allFinished: Type.Optional(Type.Boolean({ description: "Must be true to clear every finished job in this session; running jobs remain untouched" })),
+		}),
+		async execute(_toolCallId, params) {
+			guardConflicts();
+			if (params.allFinished !== undefined && params.allFinished !== true) {
+				throw new Error("allFinished must be true when provided");
+			}
+			if (Boolean(params.taskId) === Boolean(params.allFinished)) {
+				throw new Error("provide exactly one of taskId or allFinished:true");
+			}
+			const currentSession = owningSessionId();
+			if (params.allFinished) {
+				const cleared = await supervisor.clearFinished(currentSession);
+				return toolResult({ cleared, count: cleared.length, runningJobs: "untouched" });
+			}
+			const task = await supervisor.clear(params.taskId!, currentSession);
+			return toolResult({ cleared: [task.id], count: 1, task });
 		},
 	});
 }

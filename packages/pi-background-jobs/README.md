@@ -1,13 +1,13 @@
 # pi-background-jobs
 
-Focused background shell jobs for Pi. Four tools, durable output, automatic
+Focused background shell jobs for Pi. Five tools, durable output, automatic
 completion notifications, a session footer, and no agent/provider subsystems.
 
-**Related project:** I’ve used [`pi-background-tasks`](https://pi.dev/packages/pi-background-tasks), and it manages background tasks very well—do take a look, especially if you also need delegated agents, Fusion workflows, attested runs, or Anthropic attribution. This smaller package simply reflects my own preferences: [`pi-subagents`](https://github.com/tintinweb/pi-subagents) already handles agents, I only need run/status/logs/kill here, and every job survives `/reload` by default.
+**Related project:** I’ve used [`pi-background-tasks`](https://pi.dev/packages/pi-background-tasks), and it manages background tasks very well—do take a look, especially if you also need delegated agents, Fusion workflows, attested runs, or Anthropic attribution. This smaller package simply reflects my own preferences: [`pi-subagents`](https://github.com/tintinweb/pi-subagents) already handles agents, I only need run/status/logs/kill/clear here, and every job survives `/reload` by default.
 
 ## Features
 
-- `job_run`, `job_status`, `job_logs`, and `job_kill`
+- `job_run`, `job_status`, `job_logs`, `job_kill`, and `job_clear`
 - `/jobs` lists running and recent session jobs; `/jobs clear` permanently
   removes finished jobs and their files
 - `/reload` preserves every running job with the same process, PID, output
@@ -44,6 +44,8 @@ job_status()
 job_status(taskId="<id-or-unique-prefix>")
 job_logs(taskId="<id>", tail=true, maxBytes=50000)
 job_kill(taskId="<id>")
+job_clear(taskId="<id-or-unique-prefix>")
+job_clear(allFinished=true)
 ```
 
 `job_run` uses `/bin/bash -c` with the current directory and environment. It
@@ -54,13 +56,16 @@ OS permissions and are not sandboxed.
 The footer shows running counts and aggregates unseen completed, failed, and
 killed jobs as `N finished`. When running and finished jobs are both present,
 the footer combines them as `N of M jobs running`. This presentation is
-statusbar-only: `/jobs` and the agent tools retain individual outcomes. `/jobs` lists the jobs and clears their
-unseen footer notices. `/jobs clear` permanently removes all completed, failed,
-and killed jobs owned by the current session, including their metadata and
-output logs. Running jobs are untouched. Cleanup is a human command only; no
-model-callable deletion tool is exposed. The entire footer item has a blue
-background while any job is running and standard text otherwise, including when
-only failed jobs remain. Set `NO_COLOR` to disable ANSI styling.
+statusbar-only: `/jobs` and the agent tools retain individual outcomes. `/jobs`
+lists the jobs and clears their unseen footer notices. `/jobs clear` and
+`job_clear(allFinished=true)` permanently remove all completed, failed, and
+killed jobs owned by the current session, including their metadata and output
+logs. `job_clear(taskId=...)` removes one finished job. Running jobs are always
+untouched: single-job cleanup rejects them with an error and changes nothing.
+Deletion is permanent, so failed-job logs should be inspected or deliberately
+deemed unnecessary before cleanup. The entire footer item has a blue background
+while any job is running and standard text otherwise, including when only failed
+jobs remain. Set `NO_COLOR` to disable ANSI styling.
 
 ## Lifecycle and storage
 

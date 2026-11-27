@@ -152,7 +152,9 @@ test("clearFinished permanently removes terminal records and leaves running jobs
 	await supervisor.resolve(failed.id, sessionId).done;
 	await supervisor.kill(killedStart.id, sessionId);
 
-	assert.equal(await supervisor.clearFinished(sessionId), 3);
+	const cleared = await supervisor.clearFinished(sessionId);
+	assert.equal(cleared.length, 3);
+	assert.deepEqual(new Set(cleared), new Set([completed.id, failed.id, killedStart.id]));
 	assert.deepEqual(supervisor.list(sessionId).map((task) => task.id), [running.id]);
 	for (const task of [completed, failed, killedStart]) {
 		await assert.rejects(() => stat(task.output_path), /ENOENT/);
@@ -161,7 +163,7 @@ test("clearFinished permanently removes terminal records and leaves running jobs
 	await stat(running.output_path);
 	await stat(join(root, sessionId, `${running.id}.json`));
 	assert.equal(supervisor.resolve(running.id, sessionId).task.status, "running");
-	assert.equal(await supervisor.clearFinished(sessionId), 0);
+	assert.equal((await supervisor.clearFinished(sessionId)).length, 0);
 });
 
 test("footer status distinguishes running jobs and aggregates unseen finished jobs", async () => {

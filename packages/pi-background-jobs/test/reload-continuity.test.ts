@@ -129,3 +129,55 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	await assert.rejects(() => third.call("job_status", { taskId: started.id }), /job not found/);
 	await assert.rejects(() => readFile(started.output_path), /ENOENT/);
 });
+
+test("job_clear validates input and deletes only finished jobs", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-background-jobs-clear-"));
+	const previousRoot = process.env.PI_JOBS_DIR;
+	process.env.PI_JOBS_DIR = root;
+	const harness = createHarness(backgroundJobsExtension);
+	t.after(async () => {
+		await harness.shutdown("quit").catch(() => undefined);
+		if (previousRoot === undefined) delete process.env.PI_JOBS_DIR;
+		else process.env.PI_JOBS_DIR = previousRoot;
+		await rm(root, { recursive: true, force: true });
+	});
+	await harness.start("startup");
+	const running = (await harness.call("job_run", {
+		name: "Running",
+		command: "sleep 60",
+	})).details.task as JobTask;
+	const completed = (await harness.call("job_run", {
+		name: "Completed",
+		command: "printf completed",
+	})).details.task as JobTask;
+	const failed = (await harness.call("job_run", {
+		name: "Failed",
+		command: "exit 7",
+	})).details.task as JobTask;
+	await waitFor(() => harness.notifications.length === 2, "two terminal jobs");
+
+	await assert.rejects(() => harness.call("job_clear", {}), /exactly one/);
+	await assert.rejects(() => harness.call("job_clear", { allFinished: false }), /must be true/);
+	await assert.rejects(
+		() => harness.call("job_clear", { taskId: completed.id, allFinished: true }),
+		/exactly one/,
+	);
+	await assert.rejects(() => harness.call("job_clear", { taskId: running.id }), /cannot clear running job/);
+	await readFile(running.output_path);
+	await readFile(join(root, SESSION, `${running.id}.json`));
+
+	const single = await harness.call("job_clear", { taskId: completed.id });
+	assert.equal(single.details.count, 1);
+	assert.deepEqual(single.details.cleared, [completed.id]);
+	await assert.rejects(() => readFile(completed.output_path), /ENOENT/);
+	await assert.rejects(() => readFile(join(root, SESSION, `${completed.id}.json`)), /ENOENT/);
+	await readFile(running.output_path);
+
+	const bulk = await harness.call("job_clear", { allFinished: true });
+	assert.equal(bulk.details.count, 1);
+	assert.deepEqual(bulk.details.cleared, [failed.id]);
+	const remaining = (await harness.call("job_status", {})).details.tasks as JobTask[];
+	assert.deepEqual(remaining.map((task) => task.id), [running.id]);
+	assert.equal(remaining[0]?.status, "running");
+	await readFile(running.output_path);
+});
