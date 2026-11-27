@@ -105,8 +105,8 @@ Without a tmux pane, liveness relies on the registered process ID.
 | --- | --- |
 | `team_register` | Register or reactivate the current session; optionally replace team memberships |
 | `team_get_self_uuid` | Return this agent's persistent team UUID |
-| `team_get_self` | Return full identity, registration, transport, and liveness |
-| `team_list_agents` | Discover active agents; optionally include inactive/archived entries |
+| `team_get_self` | Return focused identity, role, instance, and liveness information |
+| `team_list_agents` | Discover agents through focused role/team/liveness summaries; optionally include inactive/archived entries |
 | `team_send_message` | Persist a direct message and deliver a steering/idle-wakeup notification |
 | `team_broadcast` | Deliver durable direct messages to selected team members or all active agents |
 | `team_reply` | Reply to a direct message with automatic recipient resolution and `reply_to` threading |

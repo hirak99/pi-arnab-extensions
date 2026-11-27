@@ -42,6 +42,23 @@ function toolResult(data: unknown) {
 	};
 }
 
+function jobStatusSummary(task: JobTask) {
+	return {
+		id: task.id,
+		name: task.name,
+		status: task.status,
+		pid: task.pid,
+		output_path: task.output_path,
+		created_at: task.created_at,
+		completed_at: task.completed_at,
+		exit_code: task.exit_code,
+		signal: task.signal,
+		error: task.error,
+		timeout_seconds: task.timeout_seconds,
+		deadline_at: task.deadline_at,
+	};
+}
+
 export default function backgroundJobsExtension(pi: ExtensionAPI) {
 	const root = process.env.PI_JOBS_DIR ?? join(process.cwd(), ".pi", "jobs");
 	let sessionId: string | undefined;
@@ -202,8 +219,8 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 			guardConflicts();
 			const currentSession = owningSessionId();
 			const tasks = params.taskId
-				? [{ ...supervisor.resolve(params.taskId, currentSession).task }]
-				: supervisor.list(currentSession);
+				? [jobStatusSummary(supervisor.resolve(params.taskId, currentSession).task)]
+				: supervisor.list(currentSession).map(jobStatusSummary);
 			return Promise.resolve(toolResult({ tasks }));
 		},
 	});

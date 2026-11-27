@@ -149,6 +149,19 @@ export default function teamExtension(pi: ExtensionAPI) {
 		};
 	}
 
+	function agentSummary(registration: Awaited<ReturnType<typeof withLiveness>>) {
+		return {
+			agent_id: registration.agent_id,
+			name: registration.name,
+			duties: registration.duties,
+			teams: registration.teams ?? [],
+			status: registration.status,
+			live: registration.live,
+			effective_status: registration.effective_status,
+			is_self: registration.is_self,
+		};
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		await inboxDelivery?.stop();
 		inboxDelivery = undefined;
@@ -299,7 +312,12 @@ export default function teamExtension(pi: ExtensionAPI) {
 		description: "Return this agent's team registration, instance identity, and liveness.",
 		parameters: Type.Object({}),
 		async execute() {
-			return toolResult(await withLiveness(await store.getAgent(requireSelf())));
+			const registration = await withLiveness(await store.getAgent(requireSelf()));
+			return toolResult({
+				...agentSummary(registration),
+				instance_id: registration.instance_id,
+				responsibilities_revision: registration.responsibilities_revision,
+			});
 		},
 	});
 
@@ -315,9 +333,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			const agents = await store.listAgents(params.include_inactive ?? false, params.include_archived ?? false);
 			return toolResult({
-				team_root: store.root,
-				self_agent_id: selfAgentId ?? null,
-				agents: await Promise.all(agents.map(withLiveness)),
+				agents: (await Promise.all(agents.map(withLiveness))).map(agentSummary),
 			});
 		},
 	});

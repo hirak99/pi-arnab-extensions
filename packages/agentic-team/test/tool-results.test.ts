@@ -58,6 +58,46 @@ test("team mutation and identity tools return focused payloads", async (t) => {
 		pid: process.pid,
 		transport: { type: "none" },
 	});
+	const self = await tools.get("team_get_self").execute("self", {});
+	assert.deepEqual(Object.keys(self.details).sort(), [
+		"agent_id",
+		"duties",
+		"effective_status",
+		"instance_id",
+		"is_self",
+		"live",
+		"name",
+		"responsibilities_revision",
+		"status",
+		"teams",
+	].sort());
+	assert.equal(self.details.agent_id, registered.details.agent_id);
+	assert.equal(self.details.session_id, undefined);
+	assert.equal(self.details.cwd, undefined);
+	assert.equal(self.details.pid, undefined);
+	assert.equal(self.details.transport, undefined);
+
+	const listed = await tools.get("team_list_agents").execute("list", {});
+	assert.equal(listed.details.team_root, undefined);
+	assert.equal(listed.details.self_agent_id, undefined);
+	assert.equal(listed.details.agents.length, 2);
+	for (const agent of listed.details.agents) {
+		assert.deepEqual(Object.keys(agent).sort(), [
+			"agent_id",
+			"duties",
+			"effective_status",
+			"is_self",
+			"live",
+			"name",
+			"status",
+			"teams",
+		].sort());
+		assert.equal(agent.session_id, undefined);
+		assert.equal(agent.cwd, undefined);
+		assert.equal(agent.pid, undefined);
+		assert.equal(agent.transport, undefined);
+	}
+
 	const deleted = await tools.get("team_delete_member").execute("delete", {
 		agent_id: other.agent_id,
 		confirm: true,

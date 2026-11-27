@@ -91,6 +91,8 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	});
 	assert.deepEqual(Object.keys(startedResult.details).sort(), ["id", "output_path"]);
 	const started = (await first.call("job_status", { taskId: startedResult.details.id })).details.tasks[0] as JobTask;
+	assert.equal(started.command, undefined);
+	assert.equal(started.session_id, undefined);
 	const originalPid = started.pid;
 	assert.ok(originalPid);
 	assert.match(first.statuses.at(-1) ?? "", /1 job running/);

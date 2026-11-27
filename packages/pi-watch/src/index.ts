@@ -346,23 +346,15 @@ export default function watchExtension(pi: ExtensionAPI) {
 		async execute() {
 		guardConflicts();
 			return toolResult({
-				watch_root: root,
 				watches: supervisor.list(owningSessionId()).map(({ definition, state }) => ({
 					name: definition.name,
-					id: definition.id,
 					mode: definition.mode,
 					status: state.status,
-					run: definition.run,
 					every_seconds: definition.every_seconds ?? null,
-					match: definition.match ?? null,
-					on_finish: definition.on_finish ?? false,
-					max_events: definition.max_events ?? null,
-					event_count: state.event_count,
 					broken: state.broken,
-					pid: state.pid,
-					exit_code: state.exit_code,
 					next_run_at: state.next_run_at,
-					created_at: definition.created_at,
+					event_count: state.event_count,
+					last_fired_at: state.last_fired_at,
 				})),
 			});
 		},

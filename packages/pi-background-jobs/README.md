@@ -50,7 +50,9 @@ job_clear(allFinished=true)
 
 `job_run` uses `/bin/bash -c` with the current directory and environment. It
 returns immediately with only the generated job ID and output path; use
-`job_status` for runtime details. Completion starts a native follow-up turn; do not poll
+`job_status` for runtime details. Status results retain diagnostic fields but
+omit the command and owning session ID. Completion starts a native follow-up
+turn; do not poll
 `job_status` or `job_logs` merely to wait. Commands run with the user's normal
 OS permissions and are not sandboxed.
 
