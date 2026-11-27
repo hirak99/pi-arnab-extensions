@@ -132,6 +132,29 @@ export class JobSupervisor {
 		this.onStateChange?.();
 	}
 
+	async clearFinished(sessionId: string): Promise<number> {
+		if (!this.store) throw new Error("job session is not initialized");
+		const finished = [...this.entries.values()].filter((entry) =>
+			entry.task.session_id === sessionId && entry.task.status !== "running");
+		let removed = 0;
+		let failed = 0;
+		try {
+			for (const entry of finished) {
+				try {
+					await this.store.remove(entry.task);
+					this.entries.delete(entry.task.id);
+					removed += 1;
+				} catch {
+					failed += 1;
+				}
+			}
+		} finally {
+			this.onStateChange?.();
+		}
+		if (failed) throw new Error(`Removed ${removed} finished jobs; failed to remove ${failed}`);
+		return removed;
+	}
+
 	unseenFinished(sessionId: string): JobTask[] {
 		return this.list(sessionId).filter((task) => {
 			const entry = this.entries.get(task.id);

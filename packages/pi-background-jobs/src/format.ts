@@ -11,7 +11,7 @@ export function formatJobsStatus(tasks: JobTask[], unseenFinished: JobTask[]): s
 	if (failed) parts.push(`${failed} failed`);
 	if (killed) parts.push(`${killed} stopped`);
 	if (done) parts.push(`${done} done`);
-	return ` jobs ${parts.join(" · ")} · /job `;
+	return ` jobs ${parts.join(" · ")} · /jobs `;
 }
 
 export function formatJobList(tasks: JobTask[]): string {

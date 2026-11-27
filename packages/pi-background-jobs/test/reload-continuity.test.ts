@@ -65,7 +65,7 @@ function createHarness(extension: typeof backgroundJobsExtension) {
 		async call(name: string, params: Record<string, unknown>) {
 			return tools.get(name).execute(`call-${name}`, params, undefined, undefined, ctx);
 		},
-		async command(args = "") { await commands.get("job").handler(args, ctx); },
+		async command(args = "") { await commands.get("jobs").handler(args, ctx); },
 	};
 }
 
@@ -110,7 +110,7 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	assert.match(second.statuses.at(-1) ?? "", /1 done/);
 	assert.match(await readFile(started.output_path, "utf8"), /finished\n/);
 	await second.command();
-	assert.equal(second.statuses.at(-1), undefined, "/job clears unseen terminal footer state");
+	assert.equal(second.statuses.at(-1), undefined, "/jobs clears unseen terminal footer state");
 
 	await second.shutdown("quit");
 	const restartSpecifier = "../src/index.ts?jobs-restart-test";
@@ -123,4 +123,7 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	assert.equal(historical.pid, null);
 	assert.equal(third.notifications.length, 0);
 	assert.equal((await readFile(marker, "utf8")).trim().split("\n").length, 1, "cold restart did not relaunch history");
+	await third.command("clear");
+	await assert.rejects(() => third.call("job_status", { taskId: started.id }), /job not found/);
+	await assert.rejects(() => readFile(started.output_path), /ENOENT/);
 });

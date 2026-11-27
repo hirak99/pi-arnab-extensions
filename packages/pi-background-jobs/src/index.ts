@@ -138,23 +138,26 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.registerCommand("job", {
-		description: "List running and recent background jobs, or inspect one with /job <id>",
+	pi.registerCommand("jobs", {
+		description: "List session background jobs, or permanently remove finished jobs with /jobs clear",
 		getArgumentCompletions: (prefix) => {
-			if (!sessionId) return null;
-			const matches = supervisor.list(sessionId)
-				.filter((task) => task.id.startsWith(prefix.trim()))
-				.slice(0, 20)
-				.map((task) => ({ value: task.id, label: `${task.id} ${task.name}`, description: task.status }));
-			return matches.length ? matches : null;
+			if (!"clear".startsWith(prefix.trim())) return null;
+			return [{ value: "clear", label: "clear", description: "Remove finished jobs, metadata, and logs" }];
 		},
-		handler: (args, ctx) => {
+		handler: async (args, ctx) => {
 			const currentSession = owningSessionId();
-			const id = args.trim();
-			const tasks = id ? [{ ...supervisor.resolve(id, currentSession).task }] : supervisor.list(currentSession);
-			ctx.ui.notify(formatJobList(tasks), "info");
+			const action = args.trim();
+			if (action === "clear") {
+				const removed = await supervisor.clearFinished(currentSession);
+				ctx.ui.notify(`Removed ${removed} finished job${removed === 1 ? "" : "s"}.`, "info");
+				return;
+			}
+			if (action) {
+				ctx.ui.notify("Usage: /jobs [clear]", "warning");
+				return;
+			}
+			ctx.ui.notify(formatJobList(supervisor.list(currentSession)), "info");
 			supervisor.markSeen(currentSession);
-			return Promise.resolve();
 		},
 	});
 

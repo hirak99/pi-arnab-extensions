@@ -8,7 +8,8 @@ completion notifications, a session footer, and no agent/provider subsystems.
 ## Features
 
 - `job_run`, `job_status`, `job_logs`, and `job_kill`
-- `/job` lists running and recent session jobs (`/job <id>` inspects one)
+- `/jobs` lists running and recent session jobs; `/jobs clear` permanently
+  removes finished jobs and their files
 - `/reload` preserves every running job with the same process, PID, output
   streams, start time, and absolute timeout
 - Full Pi shutdown stops running jobs; restart preserves history but never
@@ -30,9 +31,9 @@ Install the monorepo and select this extension, or load a local clone directly:
 pi -e /path/to/pi-arnab-extensions/packages/pi-background-jobs/src/index.ts
 ```
 
-It can run alongside `pi-background-tasks`: tool names, storage, and EventBus
-channels are distinct. The other package already owns `/jobs`, so this package
-uses `/job`.
+The `job_*` tools, storage, and EventBus channels are distinct from
+`pi-background-tasks`. Both packages register `/jobs`; if that command collision
+matters during side-by-side use, disable one package's command surface.
 
 ## Tools
 
@@ -50,8 +51,11 @@ returns immediately. Completion starts a native follow-up turn; do not poll
 `job_status` or `job_logs` merely to wait. Commands run with the user's normal
 OS permissions and are not sandboxed.
 
-The footer shows running counts and unseen terminal results. `/job` lists the
-jobs and clears their unseen footer notices.
+The footer shows running counts and unseen terminal results. `/jobs` lists the
+jobs and clears their unseen footer notices. `/jobs clear` permanently removes
+all completed, failed, and killed jobs owned by the current session, including
+their metadata and output logs. Running jobs are untouched. Cleanup is a human
+command only; no model-callable deletion tool is exposed.
 
 ## Lifecycle and storage
 

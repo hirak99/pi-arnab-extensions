@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -142,6 +142,28 @@ test("session isolation and bounded log reads are enforced", async (t) => {
 	await assert.rejects(() => supervisor.readLogs(started.id, sessionId, true, 50_001), /maxBytes/);
 });
 
+test("clearFinished permanently removes terminal records and leaves running jobs untouched", async (t) => {
+	const { root, supervisor, sessionId } = await fixture(t);
+	const completed = await supervisor.start(sessionId, { name: "Done", command: "printf done", cwd: "/tmp" });
+	const failed = await supervisor.start(sessionId, { name: "Failed", command: "exit 9", cwd: "/tmp" });
+	const killedStart = await supervisor.start(sessionId, { name: "Stopped", command: "sleep 60", cwd: "/tmp" });
+	const running = await supervisor.start(sessionId, { name: "Still running", command: "sleep 60", cwd: "/tmp" });
+	await supervisor.resolve(completed.id, sessionId).done;
+	await supervisor.resolve(failed.id, sessionId).done;
+	await supervisor.kill(killedStart.id, sessionId);
+
+	assert.equal(await supervisor.clearFinished(sessionId), 3);
+	assert.deepEqual(supervisor.list(sessionId).map((task) => task.id), [running.id]);
+	for (const task of [completed, failed, killedStart]) {
+		await assert.rejects(() => stat(task.output_path), /ENOENT/);
+		await assert.rejects(() => stat(join(root, sessionId, `${task.id}.json`)), /ENOENT/);
+	}
+	await stat(running.output_path);
+	await stat(join(root, sessionId, `${running.id}.json`));
+	assert.equal(supervisor.resolve(running.id, sessionId).task.status, "running");
+	assert.equal(await supervisor.clearFinished(sessionId), 0);
+});
+
 test("footer status distinguishes running and unseen terminal jobs", async () => {
 	const base: JobTask = {
 		id: "job", session_id: "session", name: "Job", command: "true", pid: null,
@@ -150,9 +172,9 @@ test("footer status distinguishes running and unseen terminal jobs", async () =>
 		status: "running",
 	};
 	assert.equal(formatJobsStatus([], []), undefined);
-	assert.equal(formatJobsStatus([base], []), " jobs 1 running · /job ");
+	assert.equal(formatJobsStatus([base], []), " jobs 1 running · /jobs ");
 	assert.equal(
 		formatJobsStatus([base], [{ ...base, status: "failed" }, { ...base, status: "completed" }]),
-		" jobs 1 running · 1 failed · 1 done · /job ",
+		" jobs 1 running · 1 failed · 1 done · /jobs ",
 	);
 });

@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, stat } from "node:fs/promises";
+import { mkdir, open, readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readJson, writeJsonAtomic } from "pi-durable-inbox";
@@ -84,6 +84,18 @@ export class JobStore {
 			};
 		} finally {
 			await handle.close();
+		}
+	}
+
+	async remove(task: JobTask): Promise<void> {
+		// Remove output first and metadata last, so a failed output deletion does
+		// not erase the record needed to inspect or retry the cleanup.
+		for (const path of [task.output_path, this.metadataPath(task.id)]) {
+			try {
+				await unlink(path);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
 		}
 	}
 
