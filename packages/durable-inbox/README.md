@@ -6,11 +6,11 @@ such as `pi-agentic-team` and `pi-watch`.
 
 Provides:
 
-- `MessageStore`: one file per message, atomic writes, no database.
-  Direct inboxes (`inboxes/<recipient>/<id>.md`) and day-partitioned channels
-  (`comm_channels/<channel>/YYYY/MM/DD/<stamp>_<id>.md`). Identity validation
-  is the consumer's concern; the store enforces storage-layout constraints
-  only (channel names, body limits, read semantics).
+- `MessageStore`: one file per direct message, atomic writes, no database.
+  Direct inboxes live at `inboxes/<recipient>/<id>.md`. Identity validation
+  is the consumer's concern; the store enforces body limits and read semantics.
+  Direct messages may carry an optional shared broadcast ID and audience-team metadata without changing
+  their per-recipient identity or read-receipt behavior.
 - `InboxDelivery`: watches a recipient's inbox and delivers unread messages
   through a caller-supplied native sender, never via terminal or user-input
   injection. Delivery format and sender identity are consumer hooks, so

@@ -19,6 +19,15 @@ import type {
 } from "./types.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TEAM_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+export function normalizeTeamNames(teams: readonly string[]): string[] {
+	const normalized = [...new Set(teams)].sort();
+	for (const team of normalized) {
+		if (!TEAM_NAME_PATTERN.test(team)) throw new Error("team names must match [a-z0-9][a-z0-9_-]{0,63}");
+	}
+	return normalized;
+}
 
 function requireUuid(value: string, label: string): void {
 	if (!UUID_PATTERN.test(value)) throw new Error(`${label} must be a UUID`);
@@ -82,6 +91,7 @@ export class TeamStore {
 					instance_id: randomUUID(),
 					name,
 					duties,
+					teams: input.teams !== undefined ? normalizeTeamNames(input.teams) : (existing.teams ?? []),
 					session_id: input.sessionId,
 					cwd: input.cwd,
 					pid: process.pid,
@@ -107,6 +117,7 @@ export class TeamStore {
 			instance_id: randomUUID(),
 			name,
 			duties,
+			teams: input.teams !== undefined ? normalizeTeamNames(input.teams) : [],
 			session_id: input.sessionId,
 			cwd: input.cwd,
 			pid: process.pid,
@@ -122,11 +133,13 @@ export class TeamStore {
 	}
 
 	async getAgent(agentId: string): Promise<AgentRegistration> {
-		return readJson<AgentRegistration>(this.agentPath(agentId));
+		const agent = await readJson<AgentRegistration>(this.agentPath(agentId));
+		return { ...agent, teams: agent.teams ?? [] };
 	}
 
 	async getArchivedAgent(agentId: string): Promise<AgentRegistration> {
-		return readJson<AgentRegistration>(this.archivedAgentPath(agentId));
+		const agent = await readJson<AgentRegistration>(this.archivedAgentPath(agentId));
+		return { ...agent, teams: agent.teams ?? [] };
 	}
 
 	async listAgents(includeInactive = false, includeArchived = false): Promise<AgentRegistration[]> {
@@ -139,7 +152,7 @@ export class TeamStore {
 				if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
 				const agent = await readJson<AgentRegistration>(join(directory, entry.name));
 				if (includeInactive || agent.status === "active" || (includeArchived && agent.status === "deleted")) {
-					agents.push(agent);
+					agents.push({ ...agent, teams: agent.teams ?? [] });
 				}
 			}
 		}
@@ -211,19 +224,10 @@ export class TeamStore {
 		return this.messages.sendDirect(input);
 	}
 
-	async postChannel(input: WriteMessageInput & { channel: string }): Promise<TeamMessage> {
-		requireUuid(input.from, "from");
-		return this.messages.postChannel(input);
-	}
-
 	async readInbox(agentId: string, options: ReadMessageOptions = {}): Promise<TeamMessage[]> {
 		requireUuid(agentId, "agent_id");
 		if (options.messageId) requireUuid(options.messageId, "message_id");
 		return this.messages.readInbox(agentId, options);
-	}
-
-	async readChannel(channel: string, options: ReadMessageOptions = {}): Promise<TeamMessage[]> {
-		return this.messages.readChannel(channel, options);
 	}
 
 	async markRead(agentId: string, messageId: string): Promise<ReadReceipt> {

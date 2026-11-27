@@ -11,20 +11,11 @@ import type {
 	WriteMessageInput,
 } from "./types.ts";
 
-const CHANNEL_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-
 function requireText(value: string, label: string, maximum: number): string {
 	const normalized = value.trim();
 	if (!normalized) throw new Error(`${label} must not be empty`);
 	if (value.length > maximum) throw new Error(`${label} exceeds ${maximum} characters`);
 	return normalized;
-}
-
-function requireChannel(value: string): string {
-	if (!CHANNEL_PATTERN.test(value)) {
-		throw new Error("channel must match [a-z0-9][a-z0-9_-]{0,63}");
-	}
-	return value;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -99,6 +90,8 @@ export function messageMarkdown(metadata: MessageMetadata, body: string): string
 		`created_at: ${JSON.stringify(metadata.created_at)}`,
 		`reply_to: ${JSON.stringify(metadata.reply_to)}`,
 		...(metadata.delivery ? [`delivery: ${JSON.stringify(metadata.delivery)}`] : []),
+		...(metadata.broadcast_id ? [`broadcast_id: ${JSON.stringify(metadata.broadcast_id)}`] : []),
+		...(metadata.teams ? [`teams: ${JSON.stringify(metadata.teams)}`] : []),
 		"---",
 		body,
 		"",
@@ -169,7 +162,6 @@ export class MessageStore {
 	}
 
 	async sendDirect(input: WriteMessageInput & { to: string }): Promise<Message> {
-		if (input.channel !== undefined) throw new Error("direct messages cannot specify a channel");
 		if (input.delivery !== undefined && input.delivery !== "inline" && input.delivery !== "reference") {
 			throw new Error("delivery must be inline or reference");
 		}
@@ -181,26 +173,10 @@ export class MessageStore {
 			created_at: new Date().toISOString(),
 			reply_to: input.replyTo ?? null,
 			delivery: input.delivery ?? "inline",
+			...(input.broadcastId !== undefined ? { broadcast_id: input.broadcastId } : {}),
+			...(input.teams !== undefined ? { teams: input.teams } : {}),
 		};
 		return this.writeMessage(input, metadata, join(this.root, "inboxes", input.to, `${metadata.id}.md`));
-	}
-
-	async postChannel(input: WriteMessageInput & { channel: string }): Promise<Message> {
-		const channel = requireChannel(input.channel);
-		if (input.to !== undefined) throw new Error("channel messages cannot specify a recipient");
-		const now = new Date();
-		const metadata: MessageMetadata = {
-			id: randomUUID(),
-			from: input.from,
-			to: null,
-			channel,
-			created_at: now.toISOString(),
-			reply_to: input.replyTo ?? null,
-		};
-		const stamp = metadata.created_at.replace(/[-:]/g, "");
-		const day = metadata.created_at.slice(0, 10).replace(/-/g, "/");
-		const path = join(this.root, "comm_channels", channel, day, `${stamp}_${metadata.id}.md`);
-		return this.writeMessage(input, metadata, path);
 	}
 
 	private async readMessage(path: string): Promise<Message> {
@@ -223,17 +199,6 @@ export class MessageStore {
 			if (entry.isFile() && entry.name.endsWith(".md")) {
 				messages.push(await this.readMessage(join(directory, entry.name)));
 			}
-		}
-		return filterAndLimit(messages, options);
-	}
-
-	async readChannel(channel: string, options: ReadMessageOptions = {}): Promise<Message[]> {
-		const directory = join(this.root, "comm_channels", requireChannel(channel));
-		if (!(await exists(directory))) return [];
-		const messages: Message[] = [];
-		for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
-			if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-			messages.push(await this.readMessage(join(entry.parentPath, entry.name)));
 		}
 		return filterAndLimit(messages, options);
 	}

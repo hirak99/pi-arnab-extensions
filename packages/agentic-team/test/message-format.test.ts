@@ -35,6 +35,21 @@ test("malformed reply IDs do not inject notification header lines", () => {
 	assert.ok(prompt.endsWith("Body"));
 });
 
+test("broadcast messages expose audience and message ID without altering the body", () => {
+	const sender = randomUUID();
+	const message = randomUUID();
+	const body = "Broadcast body";
+	const prompt = formatInlineMessage("Sender", sender, message, body, null, { teams: ["dev", "ops"] });
+
+	assert.equal(parseInlineMessageId(prompt), message);
+	assert.ok(prompt.startsWith(`Team broadcast from Sender (${sender}) to dev, ops, message ${message}:\n\n`));
+	assert.ok(prompt.endsWith(body));
+	assert.match(
+		formatInlineMessage("Sender", sender, message, body, null, { teams: [] }),
+		/ to all agents, message /,
+	);
+});
+
 test("non-inline and malformed prompts do not generate read receipts", () => {
 	assert.equal(parseInlineMessageId("Team message 123 is waiting in your inbox."), undefined);
 	assert.equal(parseInlineMessageId("Team message from Sender (invalid), message invalid:\n\nBody"), undefined);

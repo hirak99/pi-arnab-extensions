@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +10,7 @@ import { sendNativeNotification } from "pi-durable-inbox";
 import { TEAM_COMMANDS } from "./commands.ts";
 import { InboxDelivery } from "./inbox-delivery.ts";
 import { isTeamMessageId, parseInlineMessageId } from "./message-format.ts";
-import { TeamStore } from "./store.ts";
+import { normalizeTeamNames, TeamStore } from "./store.ts";
 import { detectTmuxTransport, tmuxPaneExists } from "./tmux.ts";
 import type { AgentRegistration, RegistrationInput, TeamMessage } from "./types.ts";
 
@@ -35,9 +36,10 @@ function messageResult(message: TeamMessage) {
 		id: message.metadata.id,
 		from: message.metadata.from,
 		to: message.metadata.to,
-		channel: message.metadata.channel,
 		created_at: message.metadata.created_at,
 		reply_to: message.metadata.reply_to,
+		broadcast_id: message.metadata.broadcast_id ?? null,
+		teams: message.metadata.teams ?? [],
 		read_at: message.read_at,
 		body: message.body,
 	};
@@ -78,9 +80,10 @@ export default function teamExtension(pi: ExtensionAPI) {
 		await inboxDelivery.start(agentId);
 	}
 
-	function registrationInput(ctx: ExtensionContext, duties: string, name?: string): RegistrationInput {
+	function registrationInput(ctx: ExtensionContext, duties: string, name?: string, teams?: string[]): RegistrationInput {
 		return {
 			duties,
+			...(teams !== undefined ? { teams } : {}),
 			name,
 			sessionId: ctx.sessionManager.getSessionId(),
 			cwd: ctx.cwd,
@@ -89,8 +92,8 @@ export default function teamExtension(pi: ExtensionAPI) {
 		};
 	}
 
-	async function registerCurrent(ctx: ExtensionContext, duties: string, name?: string): Promise<AgentRegistration> {
-		const registration = await store.register(registrationInput(ctx, duties, name), selfAgentId);
+	async function registerCurrent(ctx: ExtensionContext, duties: string, name?: string, teams?: string[]): Promise<AgentRegistration> {
+		const registration = await store.register(registrationInput(ctx, duties, name, teams), selfAgentId);
 		selfAgentId = registration.agent_id;
 		selfInstanceId = registration.instance_id;
 		pi.appendEntry(REGISTRATION_ENTRY, { agent_id: registration.agent_id });
@@ -262,16 +265,19 @@ export default function teamExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "team_register",
 		label: "Register team agent",
-		description: "Register this Pi session as a team agent when the human asks. Duties describe its role.",
+		description: "Register this Pi session as a team agent when the human asks. Duties describe its role. Optional teams are a full replacement membership list; omit teams to remain unassigned or preserve existing memberships.",
 		promptSnippet: "Register this session as a team agent",
 		promptGuidelines: ["Use team_register only when the human asks this session to join an agent team."],
 		executionMode: "sequential",
 		parameters: Type.Object({
 			duties: Type.String({ description: "This agent's responsibilities" }),
+			teams: Type.Optional(Type.Array(Type.String({ description: "Team slug: lowercase letters, digits, underscores, and hyphens" }), {
+				description: "Optional full membership list; omit to stay unassigned or preserve memberships, use [] to clear memberships",
+			})),
 			name: Type.Optional(Type.String({ description: "Optional human-friendly agent name" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const registration = await registerCurrent(ctx, params.duties, params.name);
+			const registration = await registerCurrent(ctx, params.duties, params.name, params.teams);
 			return toolResult(registration);
 		},
 	});
@@ -319,7 +325,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "team_delete_member",
 		label: "Delete team member",
-		description: "Archive a team registration without deleting channel history or inbox messages. Active deletion requires confirm=true.",
+		description: "Archive a team registration without deleting inbox messages. Active deletion requires confirm=true.",
 		executionMode: "sequential",
 		parameters: Type.Object({
 			agent_id: Type.String({ description: "Persistent team agent UUID" }),
@@ -362,13 +368,81 @@ export default function teamExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "team_broadcast",
+		label: "Broadcast to team agents",
+		description: "Persist one direct inbox message per selected active agent and deliver native busy/idle notifications. Omit teams to include every active agent, including unassigned agents; otherwise target the union of team members. Sender is excluded, duplicate recipients are deduplicated, and inactive agents are skipped. Supports inline or reference delivery.",
+		promptSnippet: "Broadcast a durable message to selected teams or all active agents",
+		promptGuidelines: [
+			"Use team_broadcast only for an intentional group notification. Replies should use team_reply to the sender, never an automatic rebroadcast.",
+			"Receipt alone does not require an acknowledgment; do not generate automatic acknowledgments or broadcast-reply storms.",
+		],
+		executionMode: "sequential",
+		parameters: Type.Object({
+			teams: Type.Optional(Type.Array(Type.String({ description: "Team slug" }), {
+				description: "Optional list of target teams; omit for all active agents. An explicit empty list is invalid.",
+			})),
+			text: Type.String({ description: "Broadcast body" }),
+			delivery: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("reference")], {
+				description: "inline includes the body in each wake-up; reference sends only metadata and requires inbox reads (default inline)",
+			})),
+		}),
+		async execute(_toolCallId, params) {
+			const self = requireSelf();
+			if (!params.text.trim()) throw new Error("message must not be empty");
+			if (params.text.length > 100_000) throw new Error("message exceeds 100000 characters");
+			const selectedTeams = params.teams === undefined ? undefined : normalizeTeamNames(params.teams);
+			if (selectedTeams?.length === 0) throw new Error("teams must be omitted for an all-agent broadcast or contain at least one team");
+			const candidates = (await store.listAgents(true, false)).filter((agent) => {
+				if (agent.agent_id === self) return false;
+				if (selectedTeams === undefined) return true;
+				return (agent.teams ?? []).some((team) => selectedTeams.includes(team));
+			});
+			const recipients: AgentRegistration[] = [];
+			const inactiveAgentIds: string[] = [];
+			for (const agent of candidates) {
+				if (agent.status === "active" && await isLive(agent)) recipients.push(agent);
+				else inactiveAgentIds.push(agent.agent_id);
+			}
+			const broadcastId = randomUUID();
+			const deliveries: Array<{ agent_id: string; message_id: string }> = [];
+			const failedAgentIds: string[] = [];
+			for (const recipient of recipients) {
+				try {
+					const message = await store.sendDirect({
+						from: self,
+						to: recipient.agent_id,
+						body: params.text,
+						broadcastId,
+						teams: selectedTeams ?? [],
+						delivery: params.delivery ?? "inline",
+					});
+					deliveries.push({ agent_id: recipient.agent_id, message_id: message.metadata.id });
+				} catch {
+					failedAgentIds.push(recipient.agent_id);
+				}
+			}
+			return toolResult({
+				broadcast_id: broadcastId,
+				teams: selectedTeams ?? [],
+				recipient_count: deliveries.length,
+				inactive_count: inactiveAgentIds.length,
+				failed_count: failedAgentIds.length,
+				deliveries,
+				...(failedAgentIds.length ? { failed_agent_ids: failedAgentIds } : {}),
+				persisted: deliveries.length > 0,
+				wake_status: deliveries.length > 0 ? "queued" : "no_recipients",
+			});
+		},
+	});
+
+	pi.registerTool({
 		name: "team_reply",
 		label: "Reply to team message",
-		description: "Reply to a direct team message addressed to this agent. Resolves the original sender automatically and preserves reply threading; unknown, channel, and other agents' messages are rejected. Supports inline or reference delivery.",
+		description: "Reply to a direct team message addressed to this agent, including a broadcast delivery. Resolves the original sender automatically and preserves reply threading; unknown and other agents' messages are rejected. Supports inline or reference delivery.",
 		promptSnippet: "Reply to a direct team message with automatic recipient and threading",
 		promptGuidelines: [
 			"When a response to a direct team message is requested or useful, use team_reply with reply_to. A normal assistant response is not delivered to the originating agent.",
-			"Receipt alone does not require an acknowledgment. Watch notifications and asynchronous channel messages are not direct-reply requests.",
+			"Receipt alone does not require an acknowledgment. Watch notifications are not direct-reply requests.",
 		],
 		parameters: Type.Object({
 			reply_to: Type.String({ description: "Direct message UUID addressed to this agent" }),
@@ -408,43 +482,17 @@ export default function teamExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "team_post_channel",
-		label: "Post channel message",
-		description: "Append an asynchronous Markdown message to a team channel. Channel messages do not wake subscribers.",
-		parameters: Type.Object({
-			channel: Type.String({ description: "Channel slug: lowercase letters, digits, underscores, and hyphens" }),
-			text: Type.String({ description: "Message body" }),
-			reply_to: Type.Optional(Type.String({ description: "Optional message UUID being replied to" })),
-		}),
-		async execute(_toolCallId, params) {
-			const message = await store.postChannel({
-				from: requireSelf(),
-				channel: params.channel,
-				body: params.text,
-				replyTo: params.reply_to,
-			});
-			return toolResult({ message_id: message.metadata.id, channel: params.channel, persisted: true });
-		},
-	});
-
-	pi.registerTool({
 		name: "team_read_messages",
 		label: "Read team messages",
-		description: "Read this agent's inbox or a named channel. Reading direct messages automatically records read receipts.",
-		promptSnippet: "Read direct team messages or channel history",
+		description: "Read this agent's direct inbox, including broadcast deliveries. Reading messages automatically records read receipts.",
+		promptSnippet: "Read direct team messages with automatic read receipts",
 		parameters: Type.Object({
-			channel: Type.Optional(Type.String({ description: "Read this channel instead of the inbox" })),
 			message_id: Type.Optional(Type.String({ description: "Read one direct message from this agent's inbox" })),
 			since: Type.Optional(Type.String({ description: "Return messages after this ISO timestamp" })),
 			limit: Type.Optional(Type.Number({ description: "Maximum messages, from 1 to 200; default 50" })),
 		}),
 		async execute(_toolCallId, params) {
-			if (params.channel && params.message_id) throw new Error("message_id cannot be combined with channel");
 			const options = { since: params.since, limit: params.limit, messageId: params.message_id };
-			if (params.channel) {
-				const messages = await store.readChannel(params.channel, options);
-				return toolResult({ messages: messages.map(messageResult) });
-			}
 			const self = requireSelf();
 			const messages = await store.readInbox(self, options);
 			const rendered = [];
@@ -461,7 +509,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 		label: "Check team message read status",
 		description: "Optionally check whether a direct message sent by this agent has been read. Does not notify or wake anyone.",
 		parameters: Type.Object({
-			message_id: Type.String({ description: "Direct message UUID returned by team_send_message or team_reply" }),
+			message_id: Type.String({ description: "Direct message UUID returned by team_send_message, team_reply, or an individual team_broadcast delivery" }),
 		}),
 		async execute(_toolCallId, params) {
 			return toolResult(await store.getMessageStatus(requireSelf(), params.message_id));

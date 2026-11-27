@@ -118,13 +118,4 @@ test("team_reply routes direct replies with threading, validation, and delivery 
 		() => replyTool.execute("call-4", { reply_to: notAddressedToSelf.metadata.id, text: "Invalid" }),
 		/reply_to must identify a direct message addressed to this agent/,
 	);
-	const channelMessage = await store.postChannel({
-		from: sender.agent_id,
-		channel: "engineering",
-		body: "Channel message",
-	});
-	await assert.rejects(
-		() => replyTool.execute("call-5", { reply_to: channelMessage.metadata.id, text: "Invalid" }),
-		/reply_to must identify a direct message addressed to this agent/,
-	);
 });

@@ -18,6 +18,8 @@ export interface AgentRegistration {
 	instance_id: string;
 	name: string;
 	duties: string;
+	/** Team slugs; absent in legacy registrations. New registrations always set an array. */
+	teams?: string[];
 	session_id: string;
 	cwd: string;
 	pid: number;
@@ -33,6 +35,8 @@ export interface AgentRegistration {
 
 export interface RegistrationInput {
 	duties: string;
+	/** Full replacement membership list when supplied. */
+	teams?: string[] | undefined;
 	name?: string | undefined;
 	sessionId: string;
 	cwd: string;

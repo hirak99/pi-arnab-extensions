@@ -27,12 +27,17 @@ function teamHooks(store: TeamStore) {
 				message.metadata.id,
 				message.body.trimEnd(),
 				message.metadata.reply_to,
+				message.metadata.broadcast_id ? { teams: message.metadata.teams ?? [] } : undefined,
 			);
 		},
 		formatReference(sender: AgentRegistration, message: TeamMessage): string {
 			const threading = isTeamMessageId(message.metadata.reply_to) ? ` (in reply to ${message.metadata.reply_to})` : "";
+			const kind = message.metadata.broadcast_id ? "Team broadcast" : "Team message";
+			const audience = message.metadata.broadcast_id
+				? ` to ${message.metadata.teams?.length ? message.metadata.teams.join(", ") : "all agents"}`
+				: "";
 			return [
-				`Team message ${message.metadata.id} from ${sender.name} is waiting in your inbox${threading}.`,
+				`${kind} ${message.metadata.id} from ${sender.name}${audience} is waiting in your inbox${threading}.`,
 				"Use team_read_messages with message_id to read it.",
 			].join(" ");
 		},

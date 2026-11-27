@@ -104,7 +104,6 @@ test("active deletion requires confirmation and archives while keeping message h
 	const recipient = await store.register(makeInput({ name: "recipient" }));
 
 	const direct = await store.sendDirect({ from: sender.agent_id, to: recipient.agent_id, body: "hello" });
-	const channelPost = await store.postChannel({ from: sender.agent_id, channel: "general", body: "broadcast" });
 
 	// Deleting an active agent without confirmation must fail.
 	await assert.rejects(
@@ -122,13 +121,10 @@ test("active deletion requires confirmation and archives while keeping message h
 	assert.equal(archived.status, "deleted");
 	assert.equal(archived.agent_id, recipient.agent_id);
 
-	// Inbox and channel history must survive the deletion.
+	// Inbox history must survive the deletion.
 	const inbox = await store.readInbox(recipient.agent_id);
 	assert.equal(inbox.length, 1);
 	assert.equal(inbox[0]!.metadata.id, direct.metadata.id);
-	const channel = await store.readChannel("general");
-	assert.equal(channel.length, 1);
-	assert.equal(channel[0]!.metadata.id, channelPost.metadata.id);
 });
 
 test("direct messages persist and record automatic-style read receipts", async (t) => {
@@ -178,50 +174,6 @@ test("direct messages persist and record automatic-style read receipts", async (
 	await assert.rejects(() => store.getMessageStatus(to, sent.metadata.id), /only the sender/);
 });
 
-test("channel posts persist and are readable", async (t) => {
-	const store = await withStore(t);
-	const from = randomUUID();
-
-	const first = await store.postChannel({ from, channel: "general", body: "post one" });
-	const second = await store.postChannel({ from, channel: "general", body: "post two", replyTo: first.metadata.id });
-
-	assert.equal(first.metadata.channel, "general");
-	assert.equal(first.metadata.to, null);
-	assert.equal(second.metadata.reply_to, first.metadata.id);
-
-	const messages = await store.readChannel("general");
-	assert.equal(messages.length, 2);
-	assert.deepEqual(
-		messages.map((message) => message.metadata.id).sort(),
-		[first.metadata.id, second.metadata.id].sort(),
-	);
-	assert.deepEqual(
-		messages.map((message) => message.body.trim()).sort(),
-		["post one", "post two"],
-	);
-
-	// A channel with no posts reads as empty.
-	assert.deepEqual(await store.readChannel("empty-channel"), []);
-});
-
-test("invalid channel names are rejected", async (t) => {
-	const store = await withStore(t);
-	const from = randomUUID();
-
-	for (const bad of ["Upper", "has space", "-leading-dash", ".dot", "a/b", "x".repeat(65)]) {
-		await assert.rejects(
-			() => store.postChannel({ from, channel: bad, body: "nope" }),
-			/channel must match/,
-			`postChannel should reject ${JSON.stringify(bad)}`,
-		);
-		await assert.rejects(
-			() => store.readChannel(bad),
-			/channel must match/,
-			`readChannel should reject ${JSON.stringify(bad)}`,
-		);
-	}
-});
-
 test("read receipts preserve inbox history and limit validation", async (t) => {
 	const store = await withStore(t);
 	const from = randomUUID();
@@ -241,19 +193,12 @@ test("read receipts preserve inbox history and limit validation", async (t) => {
 	// Limit restricts the number of returned messages.
 	assert.equal((await store.readInbox(to, { limit: 1 })).length, 1);
 
-	// Invalid limits are rejected for both inbox and channel reads.
-	// (readChannel validates the limit only once the channel directory exists.)
-	await store.postChannel({ from, channel: "limits", body: "seed" });
+	// Invalid limits are rejected.
 	for (const bad of [0, 201, 1.5, Number.NaN]) {
 		await assert.rejects(
 			() => store.readInbox(to, { limit: bad }),
 			/limit must be an integer from 1 to 200/,
 			`readInbox should reject limit ${bad}`,
-		);
-		await assert.rejects(
-			() => store.readChannel("limits", { limit: bad }),
-			/limit must be an integer from 1 to 200/,
-			`readChannel should reject limit ${bad}`,
 		);
 	}
 

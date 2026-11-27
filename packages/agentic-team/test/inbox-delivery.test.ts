@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -89,6 +90,41 @@ test("reference delivery keeps the body out of the native wake-up", async (t) =>
 	assert.doesNotMatch(nativeMessages[0]!, /SENSITIVE BODY/);
 	assert.match(nativeMessages[0]!, new RegExp(message.metadata.id));
 	assert.match(nativeMessages[0]!, new RegExp(`in reply to ${sender.agent_id}`));
+});
+
+test("broadcast delivery labels the audience and preserves reference privacy", async (t) => {
+	const { store, sender, recipient } = await fixture(t);
+	const nativeMessages: string[] = [];
+	const delivery = new InboxDelivery(store, (prompt) => {
+		nativeMessages.push(prompt);
+	});
+	await delivery.start(recipient.agent_id);
+	t.after(() => delivery.stop());
+
+	const inline = await store.sendDirect({
+		from: sender.agent_id,
+		to: recipient.agent_id,
+		body: "BROADCAST INLINE BODY",
+		delivery: "inline",
+		broadcastId: randomUUID(),
+		teams: ["dev", "ops"],
+	});
+	await waitFor(() => nativeMessages.length === 1);
+	assert.match(nativeMessages[0]!, /Team broadcast from Sender .* to dev, ops/);
+	assert.match(nativeMessages[0]!, /BROADCAST INLINE BODY/);
+	assert.match(nativeMessages[0]!, new RegExp(inline.metadata.id));
+
+	await store.sendDirect({
+		from: sender.agent_id,
+		to: recipient.agent_id,
+		body: "BROADCAST PRIVATE BODY",
+		delivery: "reference",
+		broadcastId: randomUUID(),
+		teams: [],
+	});
+	await waitFor(() => nativeMessages.length === 2);
+	assert.match(nativeMessages[1]!, /Team broadcast .* to all agents is waiting in your inbox/);
+	assert.doesNotMatch(nativeMessages[1]!, /BROADCAST PRIVATE BODY/);
 });
 
 test("duplicate watcher events deliver a message once", async (t) => {

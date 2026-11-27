@@ -34,21 +34,8 @@ test("direct messages persist and read receipts are idempotent", async (t) => {
 	assert.equal((await store.readInbox(to))[0]!.read_at, receipt.read_at);
 });
 
-test("channel posts persist in day-partitioned directories", async (t) => {
+test("storage-layout constraints reject invalid direct messages and limits", async (t) => {
 	const store = await withStore(t);
-	const first = await store.postChannel({ from: randomUUID(), channel: "ops", body: "one" });
-	const second = await store.postChannel({ from: randomUUID(), channel: "ops", body: "two" });
-	assert.match(second.path, /comm_channels[\\/]ops[\\/]\d{4}[\\/]\d{2}[\\/]\d{2}[\\/]/);
-	const messages = await store.readChannel("ops");
-	assert.deepEqual(
-		messages.map((message) => message.metadata.id).sort(),
-		[first.metadata.id, second.metadata.id].sort(),
-	);
-});
-
-test("storage-layout constraints reject bad channel names and limits", async (t) => {
-	const store = await withStore(t);
-	await assert.rejects(() => store.postChannel({ from: "x", channel: "Bad Name", body: "nope" }), /channel must match/);
 	// Limit validation applies once the inbox exists (matches existing behavior).
 	await store.sendDirect({ from: "x", to: "y", body: "seed" });
 	await assert.rejects(() => store.readInbox("y", { limit: 500 }), /limit must be an integer from 1 to 200/);

@@ -1,15 +1,15 @@
 # pi-agentic-team
 
-A Pi extension for filesystem-backed team registration, direct messages, and
-Slack-like asynchronous channels.
+A Pi extension for filesystem-backed team registration, optional team
+memberships, direct messages, and durable broadcasts.
 
 **Status:** early MVP. Files are the durable protocol. An in-process inbox
-watcher delivers direct messages through Pi's native messaging API; channel
-messages are read on demand.
+watcher delivers direct and broadcast messages through Pi's native messaging API.
 
 ## Features
 
 - Persistent team agent UUIDs, independent of Pi session IDs
+- Optional multi-team membership; agents may remain unassigned
 - Per-process instance UUIDs for safe lifecycle updates
 - `/team-agent-register` command and agent-initiated registration tool
 - `/team-agent-responsibilities` command for the current session
@@ -17,9 +17,9 @@ messages are read on demand.
 - Agent discovery with live/stale status
 - Safe member deletion by archival, preserving message history
 - Direct inboxes with durable Markdown messages and automatic read receipts
+- Durable broadcasts to selected teams or all active agents, with recipient deduplication
 - Inline-by-default native delivery, with reference delivery for sensitive content
 - Direct delivery never writes to or submits the interactive editor buffer
-- Asynchronous channel messages using one file per message
 - Atomic file writes and cross-process registry locks
 
 ## Installation
@@ -72,12 +72,16 @@ Or ask the current agent to register itself. It can call:
 
 ```text
 team_register(duties="...", name="optional-name")
+team_register(duties="...", teams=["dev", "ops"])  # optional multi-team membership
 ```
 
 Registration captures the Pi session ID, CWD, process ID, and tmux pane when
 available. Tmux is used only for pane liveness checks, never for message input.
 The registration identity is persisted in the Pi session, so a clean reload or
-resume restores the same team UUID with a fresh instance UUID.
+resume restores the same team UUID with a fresh instance UUID. `teams` is
+optional: omitting it leaves a new agent unassigned and preserves existing
+memberships during re-registration. Passing an explicit list replaces all
+memberships, and `teams=[]` clears them.
 
 ## Update current responsibilities
 
@@ -98,15 +102,15 @@ Without a tmux pane, liveness relies on the registered process ID.
 
 | Tool | Purpose |
 | --- | --- |
-| `team_register` | Register or reactivate the current session |
+| `team_register` | Register or reactivate the current session; optionally replace team memberships |
 | `team_get_self_uuid` | Return this agent's persistent team UUID |
 | `team_get_self` | Return full identity, registration, transport, and liveness |
 | `team_list_agents` | Discover active agents; optionally include inactive/archived entries |
 | `team_send_message` | Persist a direct message and deliver a steering/idle-wakeup notification |
+| `team_broadcast` | Deliver durable direct messages to selected team members or all active agents |
 | `team_reply` | Reply to a direct message with automatic recipient resolution and `reply_to` threading |
-| `team_read_messages` | Read the current inbox or channel history; inbox reads record receipts |
+| `team_read_messages` | Read the current direct inbox, including broadcasts; inbox reads record receipts |
 | `team_message_status` | Optionally check the read status of a message sent by this agent |
-| `team_post_channel` | Post an asynchronous channel message |
 | `team_delete_member` | Archive a registration without deleting message history |
 
 ### Direct messages
@@ -140,8 +144,7 @@ team_reply(reply_to="<message-uuid>", text="Review complete")
 
 A normal assistant response is not delivered to the originating agent. No
 acknowledgment is required merely because a message was received or read.
-Watch notifications and asynchronous channel messages are not direct-reply
-requests.
+Watch notifications are not direct-reply requests.
 
 Reply notifications include `in reply to <message-uuid>` when threaded. Both
 `team_send_message` and `team_reply` default to `delivery="inline"`; either
@@ -157,17 +160,26 @@ another model turn. The message file remains the
 durable record if native delivery fails; the recipient reports watcher errors in
 its Pi UI.
 
-### Channels
+### Broadcasts and team membership
 
-Use lowercase channel slugs containing letters, digits, hyphens, or underscores:
+`team_broadcast` creates one ordinary direct inbox message per selected active,
+live recipient. Omitting `teams` selects all active agents, including unassigned
+agents. Supplying one or more team slugs selects their union and deduplicates
+agents belonging to multiple teams. The sender is always excluded; inactive or
+stale agents are skipped and counted in the result. An explicit empty team list
+is rejected to prevent an accidental all-agent broadcast.
 
 ```text
-team_post_channel(channel="engineering", text="Status update")
-team_read_messages(channel="engineering", limit=20)
+team_broadcast(teams=["dev", "ops"], text="Please review the deployment plan")
+team_broadcast(text="Status check for every active agent")
 ```
 
-Channels do not wake subscribers in this MVP. This avoids waking every agent for
-every message and creating unintended model usage or feedback loops.
+Each recipient gets an independent durable message ID and normal read receipt;
+all messages share one `broadcast_id`. The result reports recipient, inactive,
+and failed counts plus per-recipient delivery IDs for `team_message_status`.
+Inline and reference delivery work exactly as for direct messages. Recipients
+reply to the sender with `team_reply`; no automatic acknowledgments or
+broadcast-reply storms are generated.
 
 ### Deleting a member
 
@@ -176,8 +188,7 @@ Inactive members can be deleted directly. Deleting an active member requires
 
 - Moves the registration to `agents/archived/`
 - Clears its transport
-- Preserves channel history
-- Preserves the inbox
+- Preserves all inbox history
 - Does not terminate the member's Pi process
 
 ## Storage layout
@@ -188,18 +199,15 @@ team/
 │   ├── <agent-uuid>.json
 │   └── archived/
 │       └── <agent-uuid>.json
-├── inboxes/
-│   └── <agent-uuid>/
-│       ├── <message-uuid>.md
-│       └── <message-uuid>.md.read.json
-└── comm_channels/
-    └── <channel-name>/
-        └── YYYY/MM/DD/
-            └── <timestamp>_<message-uuid>.md
+└── inboxes/
+    └── <agent-uuid>/
+        ├── <message-uuid>.md
+        └── <message-uuid>.md.read.json
 ```
 
-Messages are Markdown files with YAML-compatible frontmatter. Channel filenames
-include UTC timestamps and UUIDs to avoid same-second collisions.
+Messages are Markdown files with YAML-compatible frontmatter. Legacy
+`comm_channels/` files are left untouched for forensics; the extension no longer
+reads or writes them.
 
 Shutdown deactivation is compare-and-swap on both agent UUID and instance UUID,
 so an old process cannot deactivate a newer instance. Clean shutdown is covered
@@ -223,7 +231,7 @@ required.
 ## Current limitations
 
 - Native inbox delivery requires the recipient's registered Pi process to be running
-- No channel subscriptions, mentions, or automatic channel wake-ups
+- Broadcast delivery is best-effort per recipient; partial failures are reported
 - No heartbeat writer; liveness is checked on demand
 - No remote hosts or cross-machine transport
 - Registry and messages are trusted local files, not an authentication boundary
