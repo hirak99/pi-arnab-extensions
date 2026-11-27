@@ -348,7 +348,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 			confirm: Type.Optional(Type.Boolean({ description: "Required when deleting an active member" })),
 		}),
 		async execute(_toolCallId, params) {
-			const deleted = await store.deleteAgent(params.agent_id, params.confirm ?? false);
+			await store.deleteAgent(params.agent_id, params.confirm ?? false);
 			if (selfAgentId === params.agent_id) {
 				await inboxDelivery?.stop();
 				inboxDelivery = undefined;
@@ -356,7 +356,10 @@ export default function teamExtension(pi: ExtensionAPI) {
 				selfInstanceId = undefined;
 				pi.appendEntry(REGISTRATION_ENTRY, { agent_id: null });
 			}
-			return toolResult({ deleted: deleted.agent_id, inbox_preserved: true });
+			return {
+				content: [{ type: "text" as const, text: "Team member deleted. Inbox preserved." }],
+				details: { deleted: true, inbox_preserved: true },
+			};
 		},
 	});
 

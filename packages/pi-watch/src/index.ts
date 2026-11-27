@@ -391,7 +391,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		guardConflicts();
 			try {
 				await supervisor.pause(params.name, owningSessionId());
-				return toolResult({ paused: params.name });
+				return { content: [{ type: "text" as const, text: "Watch paused." }], details: { paused: true } };
 			} catch (error) {
 				toWatchError(error);
 			}
@@ -411,7 +411,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		guardConflicts();
 			try {
 				await supervisor.resume(params.name, owningSessionId());
-				return toolResult({ resumed: params.name });
+				return { content: [{ type: "text" as const, text: "Watch resumed." }], details: { resumed: true } };
 			} catch (error) {
 				toWatchError(error);
 			}
@@ -431,7 +431,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		guardConflicts();
 			try {
 				await supervisor.remove(params.name, owningSessionId());
-				return toolResult({ removed: params.name });
+				return { content: [{ type: "text" as const, text: "Watch removed." }], details: { removed: true } };
 			} catch (error) {
 				toWatchError(error);
 			}

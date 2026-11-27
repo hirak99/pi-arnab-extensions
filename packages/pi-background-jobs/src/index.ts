@@ -257,7 +257,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			guardConflicts();
 			const task = await supervisor.kill(params.taskId, owningSessionId());
-			return toolResult({ id: task.id, status: task.status, output_path: task.output_path });
+			return toolResult({ status: task.status, output_path: task.output_path });
 		},
 	});
 
@@ -289,7 +289,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 				return toolResult({ cleared, count: cleared.length, runningJobs: "untouched" });
 			}
 			const task = await supervisor.clear(params.taskId!, currentSession);
-			return toolResult({ cleared: [task.id], count: 1 });
+			return { content: [{ type: "text" as const, text: "Finished job cleared." }], details: { count: 1 } };
 		},
 	});
 }

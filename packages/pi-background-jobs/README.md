@@ -63,7 +63,9 @@ statusbar-only: `/jobs` and the agent tools retain individual outcomes. `/jobs`
 lists the jobs and clears their unseen footer notices. `/jobs clear` and
 `job_clear(allFinished=true)` permanently remove all completed, failed, and
 killed jobs owned by the current session, including their metadata and output
-logs. `job_clear(taskId=...)` removes one finished job. Running jobs are always
+logs. `job_clear(taskId=...)` removes one finished job and returns a concise
+acknowledgment without echoing its supplied ID. `job_kill` likewise returns only
+final status and output path. Running jobs are always
 untouched: single-job cleanup rejects them with an error and changes nothing.
 Deletion is permanent, so failed-job logs should be inspected or deliberately
 deemed unnecessary before cleanup. The entire footer item has a blue background

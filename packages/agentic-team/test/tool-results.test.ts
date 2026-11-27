@@ -102,5 +102,6 @@ test("team mutation and identity tools return focused payloads", async (t) => {
 		agent_id: other.agent_id,
 		confirm: true,
 	});
-	assert.deepEqual(deleted.details, { deleted: other.agent_id, inbox_preserved: true });
+	assert.deepEqual(deleted.content, [{ type: "text", text: "Team member deleted. Inbox preserved." }]);
+	assert.deepEqual(deleted.details, { deleted: true, inbox_preserved: true });
 });

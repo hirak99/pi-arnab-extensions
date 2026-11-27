@@ -21,8 +21,9 @@ Two modes, one contract each:
 
 Shared lifecycle and observability:
 
-Creation returns only `Watch created.`; use the inspection tools when current
-state is needed rather than receiving a redundant definition echo.
+Creation and lifecycle mutations return concise acknowledgments without echoing
+the supplied watch name. Use the inspection tools when current state is needed
+rather than receiving a redundant definition echo.
 
 - `watch_list` returns compact status/scheduling summaries; `watch_inspect` is the
   deliberate full-definition view, including the command and runtime details.

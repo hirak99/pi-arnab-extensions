@@ -122,4 +122,11 @@ test("reload preserves the live watch process; full restart auto-resumes it", as
 		return state.pid !== null && state.pid !== originalPid && runs === 2;
 	}, "full-restart replacement PID and command write");
 	assert.equal((await readFile(marker, "utf8")).trim().split("\n").length, 2, "full restart ran the command once more");
+
+	const paused = await third.call("watch_pause", { name: "continuity" });
+	assert.deepEqual(paused.content, [{ type: "text", text: "Watch paused." }]);
+	const resumed = await third.call("watch_resume", { name: "continuity" });
+	assert.deepEqual(resumed.content, [{ type: "text", text: "Watch resumed." }]);
+	const removed = await third.call("watch_remove", { name: "continuity" });
+	assert.deepEqual(removed.content, [{ type: "text", text: "Watch removed." }]);
 });

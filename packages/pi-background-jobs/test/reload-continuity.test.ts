@@ -172,8 +172,8 @@ test("job_clear validates input and deletes only finished jobs", async (t) => {
 
 	const single = await harness.call("job_clear", { taskId: completed.id });
 	assert.equal(single.details.count, 1);
-	assert.deepEqual(single.details.cleared, [completed.id]);
-	assert.equal(single.details.task, undefined);
+	assert.equal(single.details.cleared, undefined);
+	assert.deepEqual(single.content, [{ type: "text", text: "Finished job cleared." }]);
 	await assert.rejects(() => readFile(completed.output_path), /ENOENT/);
 	await assert.rejects(() => readFile(join(root, SESSION, `${completed.id}.json`)), /ENOENT/);
 	await readFile(running.output_path);
@@ -187,7 +187,7 @@ test("job_clear validates input and deletes only finished jobs", async (t) => {
 	await readFile(running.output_path);
 
 	const killed = await harness.call("job_kill", { taskId: running.id });
-	assert.equal(killed.details.id, running.id);
+	assert.equal(killed.details.id, undefined);
 	assert.equal(killed.details.status, "killed");
 	assert.equal(killed.details.output_path, running.output_path);
 	assert.equal(killed.details.command, undefined);
