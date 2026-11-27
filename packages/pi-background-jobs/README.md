@@ -51,13 +51,15 @@ returns immediately. Completion starts a native follow-up turn; do not poll
 `job_status` or `job_logs` merely to wait. Commands run with the user's normal
 OS permissions and are not sandboxed.
 
-The footer shows running counts and unseen terminal results. `/jobs` lists the
-jobs and clears their unseen footer notices. `/jobs clear` permanently removes
-all completed, failed, and killed jobs owned by the current session, including
-their metadata and output logs. Running jobs are untouched. Cleanup is a human
-command only; no model-callable deletion tool is exposed. Status pills are blue
-while running, green for completed-only, amber for stopped, and red for failures.
-Set `NO_COLOR` to disable ANSI styling.
+The footer shows running counts and aggregates unseen completed, failed, and
+killed jobs as `N finished`. This aggregation is statusbar-only: `/jobs` and the
+agent tools retain individual outcomes. `/jobs` lists the jobs and clears their
+unseen footer notices. `/jobs clear` permanently removes all completed, failed,
+and killed jobs owned by the current session, including their metadata and
+output logs. Running jobs are untouched. Cleanup is a human command only; no
+model-callable deletion tool is exposed. The entire footer item has a blue
+background while any job is running and standard text otherwise, including when
+only failed jobs remain. Set `NO_COLOR` to disable ANSI styling.
 
 ## Lifecycle and storage
 

@@ -52,10 +52,12 @@ Semantics:
   `WATCH_NAME`, `WATCH_MODE`). Watch commands must be idempotent; keep cursors
   in `$WATCH_STATE` so restarts do not re-notify old events. Full restart
   relaunches stream commands; checkpoint time-sensitive progress there.
-- The Pi footer shows `👀 N/M watchers active` for the current session, with a
-  `· X broken` suffix only when needed. The status item is hidden entirely when
-  the session has no watches. The pill is blue when healthy, amber when no
-  watcher is running, and red when broken; `NO_COLOR` disables ANSI styling.
+- The Pi footer shows `👀 N/M watchers active` for the current session, with
+  `· X paused` and `· X broken` suffixes only when needed. Paused uses yellow
+  foreground and persistent broken state uses red foreground. The entire status
+  item has a blue background while any watcher is active and no background when
+  none are active. It is hidden entirely when the session has no watches;
+  `NO_COLOR` disables all ANSI styling.
 - Definitions persist on disk under `~/.pi/pi-watch/` (override with
   `PI_WATCH_DIR`) and remain bound to their owning session ID. Running watches
   survive `/reload` without a process stop/start cycle. On a full Pi shutdown

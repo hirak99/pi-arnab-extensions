@@ -138,12 +138,14 @@ export default function watchExtension(pi: ExtensionAPI) {
 		if (!statusUi || !sessionId) return;
 		const watches = supervisor.list(sessionId);
 		const text = formatWatcherStatus(watches);
-		const tone = watches.some(({ state }) => state.broken)
-			? "error"
-			: watches.every(({ state }) => state.status !== "running")
-				? "warning"
-				: "info";
-		statusUi.setStatus("pi-watch", text ? colorStatus(text, tone) : undefined);
+		const active = watches.filter(({ state }) => state.status === "running").length;
+		const paused = watches.filter(({ state }) => state.status === "paused").length;
+		const broken = watches.filter(({ state }) => state.broken).length;
+		const highlights = [
+			...(paused > 0 ? [{ text: `${paused} paused`, tone: "warning" as const }] : []),
+			...(broken > 0 ? [{ text: `${broken} broken`, tone: "error" as const }] : []),
+		];
+		statusUi.setStatus("pi-watch", text ? colorStatus(text, active > 0 ? "info" : "standard", process.env, highlights) : undefined);
 	}
 
 	async function startDelivery(ctx: ExtensionContext): Promise<void> {

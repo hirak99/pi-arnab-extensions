@@ -307,7 +307,7 @@ test("status hook reflects create, pause, resume, and removal", async (t) => {
 	assert.equal(statuses.at(-1), "👀 1/1 watcher active");
 
 	await fixture.supervisor.pause("status", SESSION);
-	assert.equal(statuses.at(-1), "👀 0/1 watcher active");
+	assert.equal(statuses.at(-1), "👀 0/1 watcher active · 1 paused");
 	await fixture.supervisor.resume("status", SESSION);
 	assert.equal(statuses.at(-1), "👀 1/1 watcher active");
 	await fixture.supervisor.remove("status", SESSION);

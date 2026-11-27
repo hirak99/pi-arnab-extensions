@@ -16,7 +16,7 @@ test("watcher footer shows active and total counts without a zero broken suffix"
 	assert.equal(formatWatcherStatus([watch("running"), watch("running")]), "👀 2/2 watchers active");
 	assert.equal(
 		formatWatcherStatus([watch("running"), watch("paused"), watch("stopped")]),
-		"👀 1/3 watchers active",
+		"👀 1/3 watchers active · 1 paused",
 	);
 });
 
@@ -29,10 +29,10 @@ test("watcher footer shows broken count only when non-zero", () => {
 			watch("paused"),
 			watch("stopped"),
 		]),
-		"👀 3/5 watchers active · 1 broken",
+		"👀 3/5 watchers active · 1 paused · 1 broken",
 	);
 });
 
 test("watcher footer uses singular wording for one watch", () => {
-	assert.equal(formatWatcherStatus([watch("paused")]), "👀 0/1 watcher active");
+	assert.equal(formatWatcherStatus([watch("paused")]), "👀 0/1 watcher active · 1 paused");
 });

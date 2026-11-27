@@ -3,12 +3,10 @@ import test from "node:test";
 
 import { colorStatus } from "../src/status-color.ts";
 
-test("status colors use soft semantic pills and honor NO_COLOR", () => {
-	assert.equal(colorStatus("plain", "error", { NO_COLOR: "1" }), " plain ");
-	const info = colorStatus("running", "info", {});
-	const error = colorStatus("failed", "error", {});
+test("job status uses a full blue pill only while running", () => {
+	assert.equal(colorStatus("🧵 1 finished · /jobs", "standard", {}), " 🧵 1 finished · /jobs ");
+	assert.equal(colorStatus("🧵 1 finished · /jobs", "info", { NO_COLOR: "1" }), " 🧵 1 finished · /jobs ");
+	const info = colorStatus("🧵 1 job running · 3 finished · /jobs", "info", {});
 	assert.match(info, /^\x1b\[48;2;183;223;255m/);
-	assert.match(error, /^\x1b\[48;2;255;190;190m/);
-	assert.match(info, / running \x1b\[0m$/);
-	assert.notEqual(info, error);
+	assert.match(info, /\/jobs \x1b\[0m$/);
 });

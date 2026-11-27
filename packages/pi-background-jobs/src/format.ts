@@ -2,22 +2,12 @@ import type { JobTask } from "./types.ts";
 
 export function formatJobsStatus(tasks: JobTask[], unseenFinished: JobTask[]): string | undefined {
 	const running = tasks.filter((task) => task.status === "running").length;
-	const done = unseenFinished.filter((task) => task.status === "completed").length;
-	const failed = unseenFinished.filter((task) => task.status === "failed").length;
-	const killed = unseenFinished.filter((task) => task.status === "killed").length;
-	if (running + done + failed + killed === 0) return undefined;
-	const parts: Array<{ count: number; label: string }> = [];
-	if (running) parts.push({ count: running, label: "running" });
-	if (failed) parts.push({ count: failed, label: "failed" });
-	if (killed) parts.push({ count: killed, label: "stopped" });
-	if (done) parts.push({ count: done, label: "done" });
-	const [first, ...rest] = parts;
-	if (!first) return undefined;
-	const summary = [
-		`${first.count} ${first.count === 1 ? "job" : "jobs"} ${first.label}`,
-		...rest.map(({ count, label }) => `${count} ${label}`),
-	].join(" · ");
-	return `🧵 ${summary} · /jobs`;
+	const finished = unseenFinished.length;
+	if (running + finished === 0) return undefined;
+	const parts: string[] = [];
+	if (running) parts.push(`${running} ${running === 1 ? "job" : "jobs"} running`);
+	if (finished) parts.push(`${finished} finished`);
+	return `🧵 ${parts.join(" · ")} · /jobs`;
 }
 
 export function formatJobList(tasks: JobTask[]): string {

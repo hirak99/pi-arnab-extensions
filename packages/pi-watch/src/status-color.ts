@@ -1,20 +1,35 @@
-export type StatusTone = "info" | "success" | "warning" | "error";
+export type StatusTone = "standard" | "info" | "warning" | "error";
 
-const STYLES: Record<StatusTone, readonly [string, string]> = {
+export interface StatusHighlight {
+	text: string;
+	tone: "warning" | "error";
+}
+
+const STYLES: Record<Exclude<StatusTone, "standard">, readonly [string, string]> = {
 	info: ["\x1b[48;2;183;223;255m", "\x1b[38;2;11;70;110m"],
-	success: ["\x1b[48;2;183;235;190m", "\x1b[38;2;12;70;30m"],
-	warning: ["\x1b[48;2;255;226;163m", "\x1b[38;2;86;54;0m"],
-	error: ["\x1b[48;2;255;190;190m", "\x1b[38;2;105;20;20m"],
+	warning: ["\x1b[38;2;150;95;0m", ""],
+	error: ["\x1b[38;2;180;25;25m", ""],
 };
 
-/** Soft status pill with one outer space; NO_COLOR retains identical spacing. */
+/**
+ * Standard text unless active (info), with optional foreground-only suffixes.
+ * Colored suffixes restore the activity pill so its background spans the full
+ * label, including both outer spaces. NO_COLOR retains identical spacing.
+ */
 export function colorStatus(
 	text: string,
 	tone: StatusTone,
 	env: Readonly<Record<string, string | undefined>> = process.env,
+	highlights: StatusHighlight[] = [],
 ): string {
 	const label = ` ${text} `;
-	if (env.NO_COLOR !== undefined) return label;
-	const [background, foreground] = STYLES[tone];
-	return `${background}${foreground}${label}\x1b[0m`;
+	if (env.NO_COLOR !== undefined || (tone === "standard" && highlights.length === 0)) return label;
+	const active = tone === "info";
+	const restore = active ? STYLES.info.join("") : "\x1b[0m";
+	let body = label;
+	for (const highlight of highlights) {
+		const foreground = STYLES[highlight.tone][0];
+		body = body.replace(highlight.text, `${foreground}${highlight.text}${restore}`);
+	}
+	return active ? `${STYLES.info.join("")}${body}\x1b[0m` : body;
 }

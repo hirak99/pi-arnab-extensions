@@ -78,13 +78,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 		const tasks = supervisor.list(sessionId);
 		const unseen = supervisor.unseenFinished(sessionId);
 		const text = formatJobsStatus(tasks, unseen);
-		const tone = unseen.some((task) => task.status === "failed")
-			? "error"
-			: unseen.some((task) => task.status === "killed")
-				? "warning"
-				: tasks.some((task) => task.status === "running")
-					? "info"
-					: "success";
+		const tone = tasks.some((task) => task.status === "running") ? "info" : "standard";
 		statusUi.setStatus("pi-background-jobs", text ? colorStatus(text, tone) : undefined);
 	}
 

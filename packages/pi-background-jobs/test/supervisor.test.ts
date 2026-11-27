@@ -164,7 +164,7 @@ test("clearFinished permanently removes terminal records and leaves running jobs
 	assert.equal(await supervisor.clearFinished(sessionId), 0);
 });
 
-test("footer status distinguishes running and unseen terminal jobs", async () => {
+test("footer status distinguishes running jobs and aggregates unseen finished jobs", async () => {
 	const base: JobTask = {
 		id: "job", session_id: "session", name: "Job", command: "true", pid: null,
 		output_path: "/tmp/job.output", created_at: new Date().toISOString(), completed_at: null,
@@ -179,10 +179,14 @@ test("footer status distinguishes running and unseen terminal jobs", async () =>
 	);
 	assert.equal(
 		formatJobsStatus([{ ...base, status: "completed" }], [{ ...base, status: "completed" }]),
-		"🧵 1 job done · /jobs",
+		"🧵 1 finished · /jobs",
 	);
 	assert.equal(
-		formatJobsStatus([base], [{ ...base, status: "failed" }, { ...base, status: "completed" }]),
-		"🧵 1 job running · 1 failed · 1 done · /jobs",
+		formatJobsStatus([base], [
+			{ ...base, status: "failed" },
+			{ ...base, status: "completed" },
+			{ ...base, status: "killed" },
+		]),
+		"🧵 1 job running · 3 finished · /jobs",
 	);
 });
