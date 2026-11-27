@@ -620,7 +620,7 @@ export default function (pi: ExtensionAPI) {
     for (const meta of runningBackgroundTasks.values()) {
       const marker = meta.reported ? "" : "(New) ";
       meta.reported = true;
-      lines.push(`⚙️ ${marker}${backgroundTaskLabel(meta)}`);
+      lines.push(`🧵 ${marker}${backgroundTaskLabel(meta)}`);
     }
     for (const watch of watches.values()) lines.push(watchActivityLine(watch));
     if (lines.length === 0) return;

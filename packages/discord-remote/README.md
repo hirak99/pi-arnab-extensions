@@ -172,7 +172,7 @@ in the persistent session channel:
   running background jobs and all durable watches are fetched on demand through
   their plugins' EventBus status APIs
 - every `agent_end` posts one unified `Running -` snapshot below the turn
-  divider. 🤖 identifies subagents, ⚙️ background jobs, and 👀 watchers; `(New)`
+  divider. 🤖 identifies subagents, 🧵 background jobs, and 👀 watchers; `(New)`
   marks an item's first snapshot and is omitted from later snapshots
 - watcher snapshots include every durable watch owned by the current Pi
   session, not only running ones; watches from other sessions are excluded.

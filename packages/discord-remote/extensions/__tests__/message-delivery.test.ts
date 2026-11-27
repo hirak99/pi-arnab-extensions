@@ -530,10 +530,10 @@ describe("append-only transcript delivery", () => {
     expect(discord.sent).toEqual([
       DIVIDER,
       "Running -\n🤖 (New) Inspect authentication flow\n" +
-        "⚙️ (New) Test suite\n⚙️ (New) Documentation server\n⚙️ (New) Repository build",
+        "🧵 (New) Test suite\n🧵 (New) Documentation server\n🧵 (New) Repository build",
       DIVIDER,
       "Running -\n🤖 Inspect authentication flow\n" +
-        "⚙️ Test suite\n⚙️ Documentation server\n⚙️ Repository build",
+        "🧵 Test suite\n🧵 Documentation server\n🧵 Repository build",
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[0]).toMatchObject({
