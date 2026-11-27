@@ -120,6 +120,8 @@ function createHarness() {
 const BG_REQUEST = "pi-background-tasks:request:v1";
 const BG_RESPONSE = "pi-background-tasks:response:v1";
 const BG_TERMINAL = "pi-background-tasks:terminal:v1";
+const JOB_REQUEST = "pi-background-jobs:request:v1";
+const JOB_RESPONSE = "pi-background-jobs:response:v1";
 const WATCH_REQUEST = "pi-watch:request:v1";
 const WATCH_RESPONSE = "pi-watch:response:v1";
 
@@ -135,6 +137,27 @@ function installBackgroundTaskPlugin(
     queueMicrotask(() => {
       void harness.emitBus(BG_RESPONSE, {
         schema_version: "pi-background-tasks.extension-response.v1",
+        request_id: request.request_id,
+        operation: "status",
+        ok: true,
+        result: { tasks },
+      });
+    });
+  });
+  return requests;
+}
+
+function installBackgroundJobPlugin(
+  harness: ReturnType<typeof createHarness>,
+  tasks: Array<{ id: string; name?: string; description?: string; status: string }>,
+) {
+  const requests: any[] = [];
+  harness.onBus(JOB_REQUEST, (request) => {
+    requests.push(request);
+    if (request?.operation !== "status") return;
+    queueMicrotask(() => {
+      void harness.emitBus(JOB_RESPONSE, {
+        schema_version: "pi-background-jobs.extension-response.v1",
         request_id: request.request_id,
         operation: "status",
         ok: true,
@@ -490,6 +513,9 @@ describe("append-only transcript delivery", () => {
       { id: "job-b", name: "Documentation server", status: "running" },
       { id: "job-c", name: "Old completed job", status: "completed" },
     ]);
+    const jobRequests = installBackgroundJobPlugin(harness, [
+      { id: "job-d", name: "Repository build", status: "running" },
+    ]);
     await harness.emitBus("subagents:ready");
     await harness.emitBus("subagents:started", {
       id: "agent-a",
@@ -504,10 +530,10 @@ describe("append-only transcript delivery", () => {
     expect(discord.sent).toEqual([
       DIVIDER,
       "Running -\n🤖 (New) Inspect authentication flow\n" +
-        "⚙️ (New) Test suite\n⚙️ (New) Documentation server",
+        "⚙️ (New) Test suite\n⚙️ (New) Documentation server\n⚙️ (New) Repository build",
       DIVIDER,
       "Running -\n🤖 Inspect authentication flow\n" +
-        "⚙️ Test suite\n⚙️ Documentation server",
+        "⚙️ Test suite\n⚙️ Documentation server\n⚙️ Repository build",
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[0]).toMatchObject({
@@ -516,6 +542,12 @@ describe("append-only transcript delivery", () => {
       payload: {},
     });
     expect(requests[0].request_id).not.toBe(requests[1].request_id);
+    expect(jobRequests).toHaveLength(2);
+    expect(jobRequests[0]).toMatchObject({
+      schema_version: "pi-background-jobs.extension-request.v1",
+      operation: "status",
+      payload: {},
+    });
   });
 
   it("shows every watch with new, running, paused, stopped, and broken markers", async () => {
@@ -670,6 +702,32 @@ describe("append-only transcript delivery", () => {
       "🛑 Stopped: Dev server",
     ]);
   });
+
+  it.each(["background-task-notification", "background-job-finished"])(
+    "shares echo-free custom completion delivery and deduplication for %s",
+    async (customType) => {
+      discord.echo = false;
+      const harness = createHarness();
+      await harness.start();
+      const tasks = [
+        { id: "job-a", name: "Ten second sleep", status: "completed" as const },
+        { id: "job-b", name: "Test suite", status: "failed" as const },
+        { id: "job-c", name: "Dev server", status: "killed" as const },
+      ];
+      for (const task of tasks) {
+        await harness.emit("message_end", customMessage(customType, "private raw body", true, task));
+        await harness.emit("message_end", customMessage(customType, "private raw body", true, task));
+        await harness.emitBus(BG_TERMINAL, terminalBackgroundTask(task));
+      }
+
+      expect(discord.sent).toEqual([
+        "✅ Finished: Ten second sleep",
+        "❌ Failed: Test suite",
+        "🛑 Stopped: Dev server",
+      ]);
+      expect(discord.sent.join("\n")).not.toContain("private raw body");
+    },
+  );
 
   it("serializes immediate subagent and background-task completion messages", async () => {
     const pendingSends: Array<() => void> = [];

@@ -13,12 +13,13 @@
   "scripts": {
     "build": "npm run build --workspace=pi-discord-remote",
     "prepare": "npm run build",
-    "check": "npm run check --workspace=pi-durable-inbox && npm run check --workspace=pi-discord-remote && npm run check --workspace=pi-agentic-team && npm run check --workspace=pi-watch"
+    "check": "npm run check --workspace=pi-durable-inbox && npm run check --workspace=pi-discord-remote && npm run check --workspace=pi-agentic-team && npm run check --workspace=pi-watch && npm run check --workspace=pi-background-jobs"
   },
   "pi": {
     "extensions": [
       "./packages/discord-remote/dist",
       "./packages/agentic-team/src/index.ts",
+      "./packages/pi-background-jobs/src/index.ts",
       "./packages/pi-watch/src/index.ts"
     ]
   }

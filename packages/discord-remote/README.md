@@ -77,9 +77,10 @@ By default, everything is mirrored both ways (`"echo": true`). Set
   label (`senderName`, `description`, or `name`), `status`, and a shortened
   `messageId` or `id`; unknown or complex details are ignored. Message content
   and arbitrary detail fields are never mirrored. Messages with
-  `display: false` are not mirrored. Background-task custom notifications are
-  excluded because the dedicated background terminal-event integration below
-  already posts concise, deduplicated completion notices even when echo is off
+  `display: false` are not mirrored. `background-task-notification` and
+  `background-job-finished` custom messages are excluded because the dedicated
+  background completion integration below already posts concise, deduplicated
+  notices even when echo is off
 
 Messages sent from Discord are not echoed back — the channel already shows
 them.
@@ -140,10 +141,28 @@ and delays are inferred, not read. Error text is code-fenced, whitespace-
 collapsed and capped at 400 characters. Tool errors are deliberately not
 mirrored.
 
+### Compatible extensions
+
+Discord Remote has explicit activity integration for:
+
+- [Agentic Team](../agentic-team/README.md) — direct and broadcast message
+  notifications appear through the privacy-preserving custom-message mirror
+- [Background Jobs](../pi-background-jobs/README.md) — running-job snapshots
+  and `background-job-finished` terminal notifications
+- [Background Tasks](https://github.com/ismailsaleekh/pi-background-tasks) —
+  running-task snapshots and `background-task-notification` terminal notifications
+- [Watch](../pi-watch/README.md) — session-scoped durable watcher snapshots
+- [`@tintinweb/pi-subagents`](https://github.com/tintinweb/pi-subagents) —
+  subagent running and completion activity
+
+All are optional; no package imports are required. Background Jobs and
+Background Tasks can run side by side and use the same Discord formatter and
+task-ID deduplication path.
+
 ### Optional subagent, background-job, and watcher activity
 
-When `pi-subagents`, `pi-background-tasks`, and/or `pi-watch` is installed,
-their activity is reported in the persistent session channel:
+When any compatible activity extension is installed, its activity is reported
+in the persistent session channel:
 
 - subagent starts update internal state without posting an immediate message;
   running background jobs and all durable watches are fetched on demand through
@@ -163,12 +182,15 @@ their activity is reported in the persistent session channel:
 - reports use trimmed names/descriptions (up to 80 characters), with type/ID
   fallbacks; immediate completion messages and running snapshots share one
   serialized delivery queue to preserve order
-- duplicate background terminal events are ignored by task ID
+- duplicate background terminal events are ignored by task ID across both
+  plugins and both terminal-notification transport paths
 
-All three plugins are optional and accessed only through `pi.events`; Discord
-Remote does not import or require them. An absent plugin, error response, or
-malformed response silently omits only that plugin's items without affecting
-other activity or any other Discord feature. The entire snapshot is omitted
+All activity plugins are optional. Background-job and watcher status providers
+are accessed only through `pi.events`; agent/team notifications use Pi's
+standard message events. Discord Remote does not import or require any of them.
+An absent plugin, error response, or malformed response silently omits only
+that plugin's items without affecting other activity or any other Discord
+feature. The entire snapshot is omitted
 only when there are no subagents, background jobs, or watches to display.
 
 ### Auto-start (per-project opt-in)

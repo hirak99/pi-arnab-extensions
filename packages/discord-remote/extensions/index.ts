@@ -154,6 +154,12 @@ export default function (pi: ExtensionAPI) {
   const BG_REQUEST_SCHEMA = "pi-background-tasks.extension-request.v1";
   const BG_RESPONSE_SCHEMA = "pi-background-tasks.extension-response.v1";
   const BG_TERMINAL_SCHEMA = "pi-background-tasks.extension-terminal.v1";
+  const JOB_REQUEST_CHANNEL = "pi-background-jobs:request:v1";
+  const JOB_RESPONSE_CHANNEL = "pi-background-jobs:response:v1";
+  const JOB_REQUEST_SCHEMA = "pi-background-jobs.extension-request.v1";
+  const JOB_RESPONSE_SCHEMA = "pi-background-jobs.extension-response.v1";
+  const JOB_FINISHED_CUSTOM_TYPE = "background-job-finished";
+  const BG_FINISHED_CUSTOM_TYPE = "background-task-notification";
 
   interface BackgroundTask {
     id: string;
@@ -165,11 +171,16 @@ export default function (pi: ExtensionAPI) {
     id: string;
     name?: string;
     description?: string;
+    source: "tasks" | "jobs";
     reported: boolean;
   }
   const runningBackgroundTasks = new Map<string, RunningBackgroundTask>();
   const settledBackgroundTaskIds = new Set<string>();
   const pendingBackgroundStatusRequests = new Map<
+    string,
+    (tasks: BackgroundTask[] | undefined) => void
+  >();
+  const pendingJobStatusRequests = new Map<
     string,
     (tasks: BackgroundTask[] | undefined) => void
   >();
@@ -279,6 +290,22 @@ export default function (pi: ExtensionAPI) {
         ),
       );
     }),
+    pi.events.on(JOB_RESPONSE_CHANNEL, (event: any) => {
+      if (event?.schema_version !== JOB_RESPONSE_SCHEMA || event?.operation !== "status") return;
+      const settle = pendingJobStatusRequests.get(event?.request_id);
+      if (!settle) return;
+      if (!event?.ok) {
+        settle(undefined);
+        return;
+      }
+      const tasks = event?.result?.tasks;
+      if (!Array.isArray(tasks)) return;
+      settle(
+        tasks.filter(
+          (task: any): task is BackgroundTask => typeof task?.id === "string" && task.id.length > 0,
+        ),
+      );
+    }),
     pi.events.on(WATCH_RESPONSE_CHANNEL, (event: any) => {
       if (event?.schema_version !== WATCH_RESPONSE_SCHEMA || event?.operation !== "status") return;
       const settle = pendingWatchStatusRequests.get(event?.request_id);
@@ -352,23 +379,58 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function refreshRunningBackgroundTasks(): Promise<void> {
-    const tasks = await queryBackgroundTasks();
-    // An absent plugin or malformed/error response must not erase the last
-    // known snapshot. A successful empty response does clear it.
-    if (!tasks) return;
+    const [legacyTasks, jobs] = await Promise.all([queryBackgroundTasks(), queryBackgroundJobs()]);
+    if (!legacyTasks && !jobs) return;
     const next = new Map<string, RunningBackgroundTask>();
-    for (const task of tasks) {
-      if (task.status !== "running" || settledBackgroundTaskIds.has(task.id)) continue;
-      const previous = runningBackgroundTasks.get(task.id);
-      next.set(task.id, {
-        id: task.id,
-        name: task.name,
-        description: task.description,
-        reported: previous?.reported ?? false,
-      });
-    }
+    const preserve = (source: "tasks" | "jobs"): void => {
+      for (const [id, task] of runningBackgroundTasks) {
+        if (task.source === source && !settledBackgroundTaskIds.has(id)) next.set(id, task);
+      }
+    };
+    const apply = (tasks: BackgroundTask[], source: "tasks" | "jobs"): void => {
+      for (const task of tasks) {
+        if (task.status !== "running" || settledBackgroundTaskIds.has(task.id)) continue;
+        const previous = runningBackgroundTasks.get(task.id);
+        next.set(task.id, {
+          id: task.id,
+          name: task.name,
+          description: task.description,
+          source,
+          reported: previous?.reported ?? false,
+        });
+      }
+    };
+    // An absent or malformed provider preserves only its own last snapshot.
+    if (legacyTasks) apply(legacyTasks, "tasks"); else preserve("tasks");
+    if (jobs) apply(jobs, "jobs"); else preserve("jobs");
     runningBackgroundTasks.clear();
     for (const [id, task] of next) runningBackgroundTasks.set(id, task);
+  }
+
+  function queryBackgroundJobs(): Promise<BackgroundTask[] | undefined> {
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (tasks: BackgroundTask[] | undefined): void => {
+        if (settled) return;
+        settled = true;
+        pendingJobStatusRequests.delete(requestId);
+        resolve(tasks);
+      };
+      pendingJobStatusRequests.set(requestId, settle);
+      try {
+        pi.events.emit(JOB_REQUEST_CHANNEL, {
+          schema_version: JOB_REQUEST_SCHEMA,
+          request_id: requestId,
+          operation: "status",
+          payload: {},
+        });
+      } catch {
+        settle(undefined);
+        return;
+      }
+      queueMicrotask(() => settle(undefined));
+    });
   }
 
   // pi-watch answers with every durable watch, including paused and stopped
@@ -439,9 +501,7 @@ export default function (pi: ExtensionAPI) {
     return `👀 ${marker}${base}${interval ? ` · every ${interval}` : ""}`;
   }
 
-  function onBackgroundTaskSettled(event: any): Promise<void> | undefined {
-    if (event?.schema_version !== BG_TERMINAL_SCHEMA) return;
-    const task = event?.task as BackgroundTask | undefined;
+  function settleBackgroundTask(task: BackgroundTask | undefined): Promise<void> | undefined {
     if (!task?.id || settledBackgroundTaskIds.has(task.id)) return;
     let prefix: string;
     if (task.status === "completed") prefix = "✅ Finished";
@@ -454,6 +514,11 @@ export default function (pi: ExtensionAPI) {
     // Terminal snapshots carry their own metadata, so even short-lived jobs
     // that never appeared in a running snapshot get immediate feedback.
     return queueActivityReport(`${prefix}: ${backgroundTaskLabel(task)}`);
+  }
+
+  function onBackgroundTaskSettled(event: any): Promise<void> | undefined {
+    if (event?.schema_version !== BG_TERMINAL_SCHEMA) return;
+    return settleBackgroundTask(event?.task as BackgroundTask | undefined);
   }
 
   function clearQuestionState(): void {
@@ -779,10 +844,15 @@ export default function (pi: ExtensionAPI) {
     const content = event.message.content as Array<any>;
 
     // Mirror displayable custom messages generically so Discord tracks the
-    // same extension notifications as the CLI. Background completions already
-    // have a dedicated terminal-event mirror, so suppress that duplicate.
+    // same extension notifications as the CLI. Both background plugins share
+    // the specialized terminal path, which also works without echo and shares
+    // deduplication with the legacy plugin's EventBus notification.
     if (event.message.role === "custom") {
-      if (event.message.display === false || event.message.customType === "background-task-notification") return;
+      if (event.message.display === false) return;
+      if (event.message.customType === BG_FINISHED_CUSTOM_TYPE || event.message.customType === JOB_FINISHED_CUSTOM_TYPE) {
+        await settleBackgroundTask(event.message.details as BackgroundTask | undefined);
+        return;
+      }
       if (!activeConfig?.echo || !client || !runtime.activeChannelId) return;
       const notification = customNotificationLabel(event.message.customType, event.message.details);
       for (const chunk of splitMessage(notification)) {
