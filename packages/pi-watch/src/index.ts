@@ -372,6 +372,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		name: "watch_inspect",
 		label: "Inspect watch",
 		description: "Show one watch's definition, runtime state, and recent status.",
+		promptSnippet: "Inspect one durable watch's definition and runtime state",
 		parameters: Type.Object({
 			name: Type.String({ description: "Watch name" }),
 		}),
@@ -389,6 +390,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		name: "watch_pause",
 		label: "Pause watch",
 		description: "Pause a watch: stop its script and suspend scheduling. Events are not generated while paused. Paused watches do not auto-resume on reload or restart.",
+		promptSnippet: "Pause a durable watch without deleting its definition",
 		executionMode: "sequential",
 		parameters: Type.Object({
 			name: Type.String({ description: "Watch name" }),
@@ -408,6 +410,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		name: "watch_resume",
 		label: "Resume watch",
 		description: "Resume a paused or stopped watch: restart its script and scheduling.",
+		promptSnippet: "Resume a paused or stopped durable watch",
 		executionMode: "sequential",
 		parameters: Type.Object({
 			name: Type.String({ description: "Watch name" }),
@@ -427,6 +430,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		name: "watch_remove",
 		label: "Remove watch",
 		description: "Permanently remove a watch: stop its script and delete its definition. Logs and script state are kept for forensics.",
+		promptSnippet: "Permanently remove a durable watch while retaining logs and script state",
 		executionMode: "sequential",
 		parameters: Type.Object({
 			name: Type.String({ description: "Watch name" }),
