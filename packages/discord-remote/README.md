@@ -39,7 +39,10 @@ ln -sfn ~/git/pi-discord-remote ~/.pi/agent/extensions/pi-discord-remote
 
 Note: pi's `/reload` loads fresh extension modules. This package preserves an
 existing Discord client through a same-session global bridge; a full Pi restart
-creates a new client.
+creates a new client. Stable gateway and EventBus listeners buffer events while
+their old consumers are detached, then fresh consumers drain them in order.
+Accepted Discord prompts also retain their reply channel, author mention, and
+echo-suppression queue across reload, including the pre-`agent_start` window.
 
 Fork-only config keys used below: `displayNames`, `echo`, `steer`,
 `autoStart`, `staticChannel`, `channelName`. For day-to-day operations — reconnecting after a reboot,

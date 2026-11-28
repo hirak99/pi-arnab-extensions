@@ -55,6 +55,7 @@ import {
 } from "./helpers.js";
 import { colorStatus } from "./status-color.js";
 import { detectImageMediaType, formatByteSize } from "./image-metadata.js";
+import { ReloadDispatcher } from "./reload-dispatcher.js";
 
 // ─── Reconnection constants ──────────────────────────────────────────────────
 const RECONNECT_BASE_DELAY_MS = 2_000;
@@ -64,6 +65,20 @@ const RECONNECT_MAX_ATTEMPTS = 10;
  * in-flight login is not destroyed prematurely. */
 const RELOAD_LIVENESS_GRACE_MS = 5_000;
 
+interface ActivityBusHandoff {
+  activity: ReloadDispatcher<{ channel: string; event: any }>;
+  responses: Map<string, ReloadDispatcher<any>>;
+  subscriptions: Array<() => void>;
+}
+
+interface GatewayHandoff {
+  client: Client;
+  messages: ReloadDispatcher<Message>;
+  errors: ReloadDispatcher<Error>;
+  disconnects: ReloadDispatcher<unknown>;
+  detachTransport: () => void;
+}
+
 interface ReloadBridge {
   client: Client;
   config: Config;
@@ -71,6 +86,11 @@ interface ReloadBridge {
   sessionChannelName: string | null;
   sessionId: string | null;
   root: string;
+  gateway?: GatewayHandoff;
+  activityBus?: ActivityBusHandoff;
+  pendingReplyChannelId?: string | null;
+  pendingReplyUserId?: string | null;
+  injectedQueue?: string[];
 }
 
 interface ImageSendResult {
@@ -85,6 +105,10 @@ interface ImageSendResult {
 }
 
 const RELOAD_BRIDGE_KEY = Symbol.for("pi-discord-remote.reload-bridge");
+
+function peekReloadBridge(): ReloadBridge | null {
+  return (Reflect.get(globalThis, RELOAD_BRIDGE_KEY) ?? null) as ReloadBridge | null;
+}
 
 function takeReloadBridge(): ReloadBridge | null {
   const bridge = (Reflect.get(globalThis, RELOAD_BRIDGE_KEY) ?? null) as ReloadBridge | null;
@@ -113,6 +137,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   let client: Client | null = null;
+  let gateway: GatewayHandoff | undefined;
   let activeConfig: Config | null = null;
   const runtime: RuntimeState = { activeChannelId: null, sessionChannelName: null };
 
@@ -267,13 +292,51 @@ export default function (pi: ExtensionAPI) {
     return activityLabel(meta.name?.trim() || meta.description, meta.id || "Background task");
   }
 
-  const activityUnsubs: Array<() => void> = [];
+  const ACTIVITY_CHANNELS = [
+    "subagents:ready",
+    "subagents:started",
+    "subagents:completed",
+    "subagents:failed",
+    "subagents:disposed",
+    BG_TERMINAL_CHANNEL,
+  ];
+  const STATUS_RESPONSE_CHANNELS = [BG_RESPONSE_CHANNEL, JOB_RESPONSE_CHANNEL, WATCH_RESPONSE_CHANNEL];
+  const bridgedActivityBus = peekReloadBridge()?.activityBus;
+  let activityBus: ActivityBusHandoff = bridgedActivityBus ?? {
+    activity: new ReloadDispatcher<{ channel: string; event: any }>(),
+    responses: new Map<string, ReloadDispatcher<any>>(),
+    subscriptions: [],
+  };
 
-  activityUnsubs.push(
-    pi.events.on("subagents:ready", () => {
+  function subscribeActivityBus(): void {
+    for (const channel of ACTIVITY_CHANNELS) {
+      activityBus.subscriptions.push(pi.events.on(channel, (event: any) =>
+        activityBus.activity.publish({ channel, event }),
+      ));
+    }
+    for (const channel of STATUS_RESPONSE_CHANNELS) {
+      const dispatcher = new ReloadDispatcher<any>();
+      activityBus.responses.set(channel, dispatcher);
+      activityBus.subscriptions.push(pi.events.on(channel, (event: any) => dispatcher.publish(event)));
+    }
+  }
+
+  function bindActivityBus(): void {
+    activityBus.activity.bind(handleActivityEvent);
+    for (const [channel, dispatcher] of activityBus.responses) {
+      dispatcher.bind((event) => handleActivityEvent({ channel, event }));
+    }
+  }
+
+  function detachActivityBus(bus: ActivityBusHandoff): void {
+    bus.activity.detach();
+    for (const dispatcher of bus.responses.values()) dispatcher.detach();
+  }
+
+  function handleActivityEvent({ channel, event }: { channel: string; event: any }): Promise<void> | undefined {
+    if (channel === "subagents:ready") {
       subagentsAvailable = true;
-    }),
-    pi.events.on("subagents:started", (event: any) => {
+    } else if (channel === "subagents:started") {
       if (event?.id) {
         runningSubagents.set(event.id, {
           type: event?.type,
@@ -281,20 +344,14 @@ export default function (pi: ExtensionAPI) {
           reported: false,
         });
       }
-    }),
-    pi.events.on("subagents:completed", (event: any) => {
+    } else if (channel === "subagents:completed") {
       return onSubagentSettled(event, true);
-    }),
-    pi.events.on("subagents:failed", (event: any) => {
+    } else if (channel === "subagents:failed") {
       return onSubagentSettled(event, false);
-    }),
-    // Terminal event of a session: every agent has been stopped. Reset all
-    // state so a later session_start in the same process starts clean.
-    pi.events.on("subagents:disposed", () => {
+    } else if (channel === "subagents:disposed") {
       subagentsAvailable = false;
       runningSubagents.clear();
-    }),
-    pi.events.on(BG_RESPONSE_CHANNEL, (event: any) => {
+    } else if (channel === BG_RESPONSE_CHANNEL) {
       if (event?.schema_version !== BG_RESPONSE_SCHEMA || event?.operation !== "status") return;
       const settle = pendingBackgroundStatusRequests.get(event?.request_id);
       if (!settle) return;
@@ -304,13 +361,8 @@ export default function (pi: ExtensionAPI) {
       }
       const tasks = event?.result?.tasks;
       if (!Array.isArray(tasks)) return;
-      settle(
-        tasks.filter(
-          (task: any): task is BackgroundTask => typeof task?.id === "string" && task.id.length > 0,
-        ),
-      );
-    }),
-    pi.events.on(JOB_RESPONSE_CHANNEL, (event: any) => {
+      settle(tasks.filter((task: any): task is BackgroundTask => typeof task?.id === "string" && task.id.length > 0));
+    } else if (channel === JOB_RESPONSE_CHANNEL) {
       if (event?.schema_version !== JOB_RESPONSE_SCHEMA || event?.operation !== "status") return;
       const settle = pendingJobStatusRequests.get(event?.request_id);
       if (!settle) return;
@@ -320,13 +372,8 @@ export default function (pi: ExtensionAPI) {
       }
       const tasks = event?.result?.tasks;
       if (!Array.isArray(tasks)) return;
-      settle(
-        tasks.filter(
-          (task: any): task is BackgroundTask => typeof task?.id === "string" && task.id.length > 0,
-        ),
-      );
-    }),
-    pi.events.on(WATCH_RESPONSE_CHANNEL, (event: any) => {
+      settle(tasks.filter((task: any): task is BackgroundTask => typeof task?.id === "string" && task.id.length > 0));
+    } else if (channel === WATCH_RESPONSE_CHANNEL) {
       if (event?.schema_version !== WATCH_RESPONSE_SCHEMA || event?.operation !== "status") return;
       const settle = pendingWatchStatusRequests.get(event?.request_id);
       if (!settle) return;
@@ -336,21 +383,47 @@ export default function (pi: ExtensionAPI) {
       }
       const snapshots = event?.result?.watches;
       if (!Array.isArray(snapshots)) return;
-      settle(
-        snapshots.filter(
-          (watch: any): watch is WatchSnapshot =>
-            typeof watch?.id === "string" &&
-            watch.id.length > 0 &&
-            typeof watch?.name === "string" &&
-            (watch?.mode === "poll" || watch?.mode === "stream") &&
-            (watch?.status === "running" || watch?.status === "paused" || watch?.status === "stopped"),
-        ),
-      );
-    }),
-    pi.events.on(BG_TERMINAL_CHANNEL, (event: any) => {
+      settle(snapshots.filter((watch: any): watch is WatchSnapshot =>
+        typeof watch?.id === "string" &&
+        watch.id.length > 0 &&
+        typeof watch?.name === "string" &&
+        (watch?.mode === "poll" || watch?.mode === "stream") &&
+        (watch?.status === "running" || watch?.status === "paused" || watch?.status === "stopped"),
+      ));
+    } else if (channel === BG_TERMINAL_CHANNEL) {
       return onBackgroundTaskSettled(event);
-    }),
-  );
+    }
+  }
+
+  function disposeActivityBus(bus: ActivityBusHandoff): void {
+    detachActivityBus(bus);
+    for (const dispatcher of bus.responses.values()) dispatcher.dispose();
+    bus.activity.dispose();
+    bus.responses.clear();
+    for (const unsubscribe of bus.subscriptions.splice(0)) unsubscribe();
+  }
+
+  if (!bridgedActivityBus) {
+    subscribeActivityBus();
+    bindActivityBus();
+  }
+
+  async function discardReloadBridge(preserved: ReloadBridge): Promise<void> {
+    if (preserved.activityBus) {
+      disposeActivityBus(preserved.activityBus);
+      if (activityBus === preserved.activityBus) {
+        activityBus = {
+          activity: new ReloadDispatcher<{ channel: string; event: any }>(),
+          responses: new Map<string, ReloadDispatcher<any>>(),
+          subscriptions: [],
+        };
+        subscribeActivityBus();
+        bindActivityBus();
+      }
+    }
+    disposeGateway(preserved.gateway);
+    await preserved.client.destroy().catch(() => {});
+  }
 
   function queueActivityReport(text: string): Promise<void> {
     const report = activityReportQueue.then(() => sendActivityStatus(text));
@@ -1060,9 +1133,14 @@ export default function (pi: ExtensionAPI) {
       if (preserved && preserved.sessionId === activeSessionId && preserved.root === activeRoot) {
         client = preserved.client;
         activeConfig = preserved.config;
+        gateway = preserved.gateway;
         runtime.activeChannelId = preserved.activeChannelId;
         runtime.sessionChannelName = preserved.sessionChannelName;
+        pendingReplyChannelId = preserved.pendingReplyChannelId ?? null;
+        pendingReplyUserId = preserved.pendingReplyUserId ?? null;
+        injectedQueue.splice(0, injectedQueue.length, ...(preserved.injectedQueue ?? []));
         isShuttingDown = false;
+        bindActivityBus();
         attachClientHandlers(client);
         const channelLabel = runtime.sessionChannelName ?? runtime.activeChannelId ?? "unknown";
         connectSetStatus("pi-discord-remote", colorStatus(`💬 Discord: #${channelLabel}`, "success"));
@@ -1085,10 +1163,10 @@ export default function (pi: ExtensionAPI) {
       }
       // No valid bridge: reload never applies autoStart. Clean up an
       // invalid/mismatched bridge and leave this session disconnected.
-      if (preserved) await preserved.client.destroy().catch(() => {});
+      if (preserved) await discardReloadBridge(preserved);
       return;
     }
-    if (preserved) await preserved.client.destroy().catch(() => {});
+    if (preserved) await discardReloadBridge(preserved);
     if (event?.reason !== "new" && event?.reason !== "resume" && event?.reason !== "startup") return;
     if (!ctx?.hasUI) return;
     if (client) return;
@@ -1213,18 +1291,7 @@ export default function (pi: ExtensionAPI) {
       partials: [Partials.Channel, Partials.Message],
     });
 
-    client.on("messageCreate", buildMessageHandler());
-    client.on("error", (err) => {
-      console.error("[pi-discord-remote] Discord client error:", err);
-      setStatus("pi-discord-remote", colorStatus("⚠️ Discord: error", "error"));
-    });
-    client.on("shardDisconnect", () => {
-      stopDiscordTyping();
-      if (isShuttingDown) return;
-      console.error("[pi-discord-remote] Discord WebSocket disconnected during reconnect, retrying…");
-      setStatus("pi-discord-remote", colorStatus("🔄 Discord: reconnecting…", "warning"));
-      scheduleReconnect();
-    });
+    attachClientHandlers(client);
 
     try {
       await client.login(cfg.token);
@@ -1327,16 +1394,22 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async (event: any) => {
     stopDiscordTyping();
     clearReloadLivenessTimer();
-    // Drop pi.events bus subscriptions so a reloaded copy of this extension
-    // doesn't accumulate stale handlers on the shared bus.
-    for (const unsub of activityUnsubs.splice(0)) unsub();
+    // Stable transport/bus listeners survive reload and buffer events while
+    // runtime-owned consumers are detached. Full shutdown disposes only our
+    // own subscriptions, never unrelated EventBus or Discord listeners.
+    if (event?.reason === "reload") {
+      detachActivityBus(activityBus);
+      detachGatewayConsumers();
+    } else {
+      disposeActivityBus(activityBus);
+    }
     for (const settle of [...pendingBackgroundStatusRequests.values()]) settle(undefined);
+    for (const settle of [...pendingJobStatusRequests.values()]) settle(undefined);
     for (const settle of [...pendingWatchStatusRequests.values()]) settle(undefined);
     clearReconnectTimer();
     isShuttingDown = true;
-    // Hand the live client to the replacement runtime. Build the bridge
-    // BEFORE stripping listeners so a failure here can still fall back to
-    // destroying the client — never leave a listenerless zombie socket.
+    // Hand the live client and buffered event dispatchers to the replacement
+    // runtime. No gateway listener removal or channel teardown occurs.
     if (event?.reason === "reload") {
       if (client) {
         if (!activeConfig) {
@@ -1344,6 +1417,8 @@ export default function (pi: ExtensionAPI) {
           // off or safely re-adopted. Destroy it instead.
           console.error("[pi-discord-remote] Client alive without config during reload; destroying it");
           await client.destroy().catch(() => {});
+          disposeGateway(gateway);
+          disposeActivityBus(activityBus);
         } else {
           storeReloadBridge({
             client,
@@ -1352,13 +1427,22 @@ export default function (pi: ExtensionAPI) {
             sessionChannelName: runtime.sessionChannelName,
             sessionId: activeSessionId,
             root: activeRoot ?? process.cwd(),
+            gateway,
+            activityBus,
+            pendingReplyChannelId,
+            pendingReplyUserId,
+            injectedQueue: [...injectedQueue],
           });
-          client.removeAllListeners();
         }
         client = null;
+        gateway = undefined;
         activeConfig = null;
         runtime.activeChannelId = null;
         runtime.sessionChannelName = null;
+      } else {
+        disposeGateway(gateway);
+        gateway = undefined;
+        disposeActivityBus(activityBus);
       }
       connectNotify = null;
       connectSetStatus = null;
@@ -1375,23 +1459,62 @@ export default function (pi: ExtensionAPI) {
       runtime.activeChannelId = null;
       runtime.sessionChannelName = null;
     }
+    disposeGateway(gateway);
+    gateway = undefined;
     activeSessionId = null;
     activeRoot = null;
   });
 
   function attachClientHandlers(target: Client): void {
-    target.on("messageCreate", buildMessageHandler());
-    target.on("error", (err) => {
+    if (!gateway || gateway.client !== target) {
+      gateway?.detachTransport();
+      const messages = gateway?.messages ?? new ReloadDispatcher<Message>();
+      const errors = gateway?.errors ?? new ReloadDispatcher<Error>();
+      const disconnects = gateway?.disconnects ?? new ReloadDispatcher<unknown>();
+      const onMessage = (message: Message) => { void messages.publish(message); };
+      const onError = (error: Error) => { void errors.publish(error); };
+      const onDisconnect = (event: unknown) => { void disconnects.publish(event); };
+      target.on("messageCreate", onMessage);
+      target.on("error", onError);
+      target.on("shardDisconnect", onDisconnect);
+      gateway = {
+        client: target,
+        messages,
+        errors,
+        disconnects,
+        detachTransport: () => {
+          target.off("messageCreate", onMessage);
+          target.off("error", onError);
+          target.off("shardDisconnect", onDisconnect);
+        },
+      };
+    }
+    gateway.messages.bind(buildMessageHandler());
+    gateway.errors.bind((err) => {
       console.error("[pi-discord-remote] Discord client error:", err);
       connectSetStatus?.("pi-discord-remote", colorStatus("⚠️ Discord: error", "error"));
     });
-    target.on("shardDisconnect", () => {
+    gateway.disconnects.bind(() => {
       stopDiscordTyping();
       if (isShuttingDown) return;
       console.error("[pi-discord-remote] Discord WebSocket disconnected, starting reconnect…");
       connectSetStatus?.("pi-discord-remote", colorStatus("🔄 Discord: reconnecting…", "warning"));
       scheduleReconnect();
     });
+  }
+
+  function detachGatewayConsumers(): void {
+    gateway?.messages.detach();
+    gateway?.errors.detach();
+    gateway?.disconnects.detach();
+  }
+
+  function disposeGateway(handoff: GatewayHandoff | undefined): void {
+    if (!handoff) return;
+    handoff.detachTransport();
+    handoff.messages.dispose();
+    handoff.errors.dispose();
+    handoff.disconnects.dispose();
   }
 
   // Auto-connect removed — user must run /discord start explicitly.
@@ -1741,6 +1864,8 @@ export default function (pi: ExtensionAPI) {
           await deleteSessionChannel((key, val) => ctx.ui.setStatus(key, val));
           await client.destroy().catch(() => {});
           client = null;
+          disposeGateway(gateway);
+          gateway = undefined;
           activeConfig = null;
           runtime.activeChannelId = null;
           runtime.sessionChannelName = null;

@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ const discord = vi.hoisted(() => {
     id: "channel-1",
     name: "test-channel",
     isTextBased: () => true,
-    send: vi.fn(async () => ({})),
+    send: vi.fn(async (_text: string) => ({})),
     sendTyping: vi.fn(async () => {}),
     delete: vi.fn(async () => {}),
   };
@@ -73,18 +74,11 @@ type EventHandler = (event: any, ctx?: any) => Promise<unknown>;
 
 function createHarness(extension: typeof registerExtension = registerExtension) {
   const handlers = new Map<string, EventHandler>();
-  const busHandlers = new Map<string, (event: any) => unknown>();
   const tools = new Map<string, any>();
   let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
   let commandName: string | undefined;
   const pi = {
-    events: {
-      on: vi.fn((name: string, handler: (event: any) => unknown) => {
-        busHandlers.set(name, handler);
-        return () => busHandlers.delete(name);
-      }),
-      emit: vi.fn(),
-    },
+    events: sharedEventBus,
     on: vi.fn((name: string, handler: EventHandler) => {
       handlers.set(name, handler);
     }),
@@ -139,7 +133,14 @@ function makeAutoStartContext(options: { parentSession?: string; persisted?: boo
   };
 }
 
+let sharedEventBus: ReturnType<typeof createEventBus>;
+
+beforeEach(() => {
+  sharedEventBus = createEventBus();
+});
+
 afterEach(() => {
+  sharedEventBus.clear();
   Reflect.deleteProperty(globalThis, Symbol.for("pi-discord-remote.reload-bridge"));
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -234,11 +235,11 @@ describe("Discord client reload handoff", () => {
     expect(client.listenerCount("error")).toBe(1);
 
     await first.emit("session_shutdown", { reason: "reload" });
-    expect(client.listenerCount("messageCreate")).toBe(0);
+    expect(client.listenerCount("messageCreate")).toBe(1);
     const storedBridge = Reflect.get(globalThis, Symbol.for("pi-discord-remote.reload-bridge"));
     expect(storedBridge).toMatchObject({ sessionId: "session-1", root: "/test-project" });
-    expect(client.listenerCount("error")).toBe(0);
-    expect(client.listenerCount("shardDisconnect")).toBe(0);
+    expect(client.listenerCount("error")).toBe(1);
+    expect(client.listenerCount("shardDisconnect")).toBe(1);
     expect(client.destroy).not.toHaveBeenCalled();
     oldUi.notify.mockClear();
     oldUi.setStatus.mockClear();
@@ -266,10 +267,12 @@ describe("Discord client reload handoff", () => {
     );
 
     expect(() => client.emit("error", new Error("network failure"))).not.toThrow();
-    expect(newUi.setStatus).toHaveBeenCalledWith(
-      "pi-discord-remote",
-      expect.stringContaining("⚠️ Discord: error"),
-    );
+    await vi.waitFor(() => {
+      expect(newUi.setStatus).toHaveBeenCalledWith(
+        "pi-discord-remote",
+        expect.stringContaining("⚠️ Discord: error"),
+      );
+    });
     expect(oldUi.setStatus).not.toHaveBeenCalled();
 
     const incoming = {
@@ -282,11 +285,135 @@ describe("Discord client reload handoff", () => {
     };
     const messageHandler = client.listeners("messageCreate")[0];
     await messageHandler(incoming);
-    expect(second.pi.sendUserMessage).toHaveBeenCalledWith("[<@user-1>]: after reload");
+    await vi.waitFor(() => expect(second.pi.sendUserMessage).toHaveBeenCalledWith("[<@user-1>]: after reload"));
     expect(first.pi.sendUserMessage).not.toHaveBeenCalled();
 
     await second.emit("session_shutdown", { reason: "quit" });
     expect(client.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("buffers gateway and shared activity events during the fresh-module handoff", async () => {
+    const first = createHarness();
+    const oldUi = makeUi();
+    await first.start({ ...makeAutoStartContext(), ui: oldUi });
+    const client = discord.instances[discord.instances.length - 1];
+    const sentinel = vi.fn();
+    const removeSentinel = sharedEventBus.on("subagents:started", sentinel);
+    discord.channel.send.mockClear();
+    await first.emit("session_shutdown", { reason: "reload" });
+    oldUi.notify.mockClear();
+    oldUi.setStatus.mockClear();
+    oldUi.notify.mockImplementation(() => { throw new Error("stale UI"); });
+    oldUi.setStatus.mockImplementation(() => { throw new Error("stale UI"); });
+
+    const incoming = (content: string) => ({
+      author: { bot: false, id: "user-1", username: "tester" },
+      member: null,
+      channelId: "channel-1",
+      content,
+      react: vi.fn(async () => {}),
+      reply: vi.fn(async () => {}),
+    });
+    client.emit("messageCreate", incoming("gap one"));
+    expect(() => client.emit("error", new Error("gap error"))).not.toThrow();
+    client.emit("messageCreate", incoming("gap two"));
+    sharedEventBus.emit("subagents:started", { id: "gap-agent", description: "Gap activity" });
+    sharedEventBus.emit("subagents:completed", { id: "gap-agent" });
+    expect(first.pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(sentinel).toHaveBeenCalledOnce();
+
+    const reloadSpecifier = "../index.js?buffered-gateway-and-activity";
+    const freshExtension = (await import(reloadSpecifier)).default;
+    const second = createHarness(freshExtension);
+    const newUi = makeUi();
+    await second.emit("session_start", { reason: "reload" }, { ...makeAutoStartContext(), ui: newUi });
+    await vi.waitFor(() => expect(second.pi.sendUserMessage.mock.calls.map(([text]) => text)).toEqual([
+      "[<@user-1>]: gap one",
+      "[<@user-1>]: gap two",
+    ]));
+    await vi.waitFor(() => expect(discord.channel.send).toHaveBeenCalledWith("✅ Finished: Gap activity"));
+    await vi.waitFor(() => expect(newUi.setStatus).toHaveBeenCalledWith(
+      "pi-discord-remote",
+      expect.stringContaining("⚠️ Discord: error"),
+    ));
+    expect(oldUi.setStatus).not.toHaveBeenCalled();
+    expect(client.listenerCount("messageCreate")).toBe(1);
+    expect(client.listenerCount("error")).toBe(1);
+    expect(sentinel).toHaveBeenCalledOnce();
+    await second.emit("session_shutdown", { reason: "quit" });
+    removeSentinel();
+  });
+
+  it("preserves an accepted prompt route and echo suppression across pre-agent reload", async () => {
+    vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({
+      token: "test-token",
+      guildId: "guild-1",
+      echo: true,
+    });
+    const first = createHarness();
+    await first.start(makeAutoStartContext());
+    const client = discord.instances[discord.instances.length - 1];
+    discord.channel.send.mockClear();
+    client.emit("messageCreate", {
+      author: { bot: false, id: "user-1", username: "tester" },
+      member: null,
+      channelId: "channel-1",
+      content: "pending prompt",
+      react: vi.fn(async () => {}),
+      reply: vi.fn(async () => {}),
+    });
+    await vi.waitFor(() => expect(first.pi.sendUserMessage).toHaveBeenCalledWith("[<@user-1>]: pending prompt"));
+    await first.emit("session_shutdown", { reason: "reload" });
+
+    const reloadSpecifier = "../index.js?pending-prompt-adoption";
+    const freshExtension = (await import(reloadSpecifier)).default;
+    const second = createHarness(freshExtension);
+    await second.emit("session_start", { reason: "reload" }, makeAutoStartContext());
+    await second.emit("message_end", {
+      message: { role: "user", content: [{ type: "text", text: "[<@user-1>]: pending prompt" }] },
+    });
+    await second.emit("message_end", {
+      message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
+    });
+    await second.emit("agent_end");
+    await vi.waitFor(() => expect(discord.channel.send.mock.calls.map(([text]) => text)).toEqual([
+      "answer",
+      "<@user-1> ────────────────────",
+    ]));
+    expect(discord.channel.send).toHaveBeenCalledTimes(2);
+    await second.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("rejects a mismatched bridge without delivering buffered input or clearing unrelated bus subscribers", async () => {
+    const first = createHarness();
+    await first.start(makeAutoStartContext());
+    const client = discord.instances[discord.instances.length - 1];
+    const sentinel = vi.fn();
+    sharedEventBus.on("external:event", sentinel);
+    await first.emit("session_shutdown", { reason: "reload" });
+    client.emit("messageCreate", {
+      author: { bot: false, id: "user-1", username: "tester" },
+      member: null,
+      channelId: "channel-1",
+      content: "must not cross roots",
+      react: vi.fn(async () => {}),
+      reply: vi.fn(async () => {}),
+    });
+
+    const reloadSpecifier = "../index.js?mismatched-buffered-bridge";
+    const freshExtension = (await import(reloadSpecifier)).default;
+    const second = createHarness(freshExtension);
+    const otherContext = {
+      ...makeAutoStartContext(),
+      cwd: "/other-project",
+    };
+    await second.emit("session_start", { reason: "reload" }, otherContext);
+    expect(client.destroy).toHaveBeenCalledOnce();
+    expect(client.listenerCount("messageCreate")).toBe(0);
+    expect(client.listenerCount("error")).toBe(0);
+    expect(second.pi.sendUserMessage).not.toHaveBeenCalled();
+    sharedEventBus.emit("external:event", {});
+    expect(sentinel).toHaveBeenCalledOnce();
   });
 
   it("ignores autoStart on an interactive reload when no bridge exists", async () => {
@@ -366,6 +493,7 @@ describe("Discord client reload handoff", () => {
       content: string,
       names: { member?: string; global?: string } = {},
     ) => {
+      const previousCalls = harness.pi.sendUserMessage.mock.calls.length;
       await messageHandler({
         author: { bot: false, id, username, displayName: names.global },
         member: names.member === undefined ? null : { displayName: names.member },
@@ -374,6 +502,7 @@ describe("Discord client reload handoff", () => {
         react: vi.fn(async () => {}),
         reply: vi.fn(async () => {}),
       });
+      await vi.waitFor(() => expect(harness.pi.sendUserMessage.mock.calls.length).toBe(previousCalls + 1));
     };
 
     await send("assigned-user", "assigned_handle", "assigned", {
