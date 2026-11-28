@@ -347,7 +347,16 @@ export class JobSupervisor {
 		entry.seen = false;
 		try {
 			if (entry.log) await entry.log.close();
+		} catch (error) {
+			this.onError?.(error instanceof Error ? error : new Error(String(error)));
+		}
+		try {
 			await entry.saveChain;
+		} catch (error) {
+			this.onError?.(error instanceof Error ? error : new Error(String(error)));
+		}
+		try {
+			// Always attempt terminal persistence, even after an earlier log/PID save failure.
 			await this.store?.save(entry.task);
 		} catch (error) {
 			this.onError?.(error instanceof Error ? error : new Error(String(error)));

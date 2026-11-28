@@ -270,6 +270,48 @@ test("watch output rotates without stopping and removal deletes every segment", 
 	}
 });
 
+test("poll scheduling continues after an exit-state save failure", async (t) => {
+	const { supervisor, root } = await withSupervisor(t);
+	const registry = (supervisor as any).registry;
+	const saveState = registry.saveState.bind(registry);
+	let injected = false;
+	registry.saveState = async (id: string, state: any) => {
+		if (!injected && state.exit_code === 0) {
+			injected = true;
+			throw new Error("injected state save failure");
+		}
+		await saveState(id, state);
+	};
+	const marker = join(root, "runs");
+	await supervisor.create({
+		name: "save-failure",
+		mode: "poll",
+		run: `echo run >> ${marker}; exit 0`,
+		everySeconds: 1,
+		sessionId: SESSION,
+	});
+	await waitFor(async () => {
+		const runs = await readFile(marker, "utf8").catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? "" : Promise.reject(error));
+		return runs.trim().split("\n").filter(Boolean).length >= 2;
+	}, "poll after state failure");
+});
+
+test("poll notification buffers stay bounded under high output volume", async (t) => {
+	const { supervisor, events } = await withSupervisor(t);
+	const definition = await supervisor.create({
+		name: "memory-bound",
+		mode: "poll",
+		run: "for i in $(seq 1 5000); do echo a-rather-long-poll-output-line; done; exit 1",
+		everySeconds: 3600,
+		sessionId: SESSION,
+	});
+	await waitFor(() => events.length === 1, "high-volume poll event");
+	const entry = (supervisor as any).entries.get(definition.id);
+	assert.ok(entry.stdoutBuf.length <= 2000);
+	assert.equal(entry.outputTruncated, true);
+	assert.match(events[0]!, /truncated/);
+});
+
 test("watch lifecycle: pause stops events, resume restarts, remove deletes definition", async (t) => {
 	const { supervisor, events, root } = await withSupervisor(t);
 	const marker = join(await mkdtemp(join(tmpdir(), "pi-watch-marker-")), "count");

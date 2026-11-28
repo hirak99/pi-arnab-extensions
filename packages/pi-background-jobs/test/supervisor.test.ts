@@ -114,6 +114,44 @@ test("reload rebind waits for log and durable metadata finalization", async (t) 
 	assert.equal(delivered.length, 1);
 });
 
+test("terminal metadata is still saved after output close failure", async (t) => {
+	const { supervisor, delivered, errors, sessionId } = await fixture(t);
+	const started = await supervisor.start(sessionId, {
+		name: "Close failure",
+		command: "sleep 0.1; printf complete",
+		cwd: "/tmp",
+	});
+	const entry = supervisor.resolve(started.id, sessionId);
+	const close = entry.log!.close.bind(entry.log);
+	entry.log!.close = async () => {
+		await close();
+		throw new Error("injected close failure");
+	};
+	await entry.done;
+	const store = (supervisor as any).store;
+	assert.equal((await store.readMetadata(started.id)).status, "completed");
+	assert.equal(delivered[0]?.status, "completed");
+	assert.ok(errors.some((error) => error.message.includes("injected close failure")));
+});
+
+test("terminal metadata is still saved after an earlier PID save failure", async (t) => {
+	const { supervisor, delivered, sessionId } = await fixture(t);
+	const store = (supervisor as any).store;
+	const save = store.save.bind(store);
+	let failPidSave = true;
+	store.save = async (task: JobTask) => {
+		if (failPidSave && task.status === "running" && task.pid !== null) {
+			failPidSave = false;
+			throw new Error("injected PID save failure");
+		}
+		await save(task);
+	};
+	const started = await supervisor.start(sessionId, { name: "Save failure", command: "printf complete", cwd: "/tmp" });
+	await supervisor.resolve(started.id, sessionId).done;
+	assert.equal((await store.readMetadata(started.id)).status, "completed");
+	assert.equal(delivered[0]?.status, "completed");
+});
+
 test("job kill terminates the POSIX process group and preserves logs", async (t) => {
 	if (process.platform === "win32") return;
 	const { supervisor, delivered, sessionId } = await fixture(t);

@@ -38,6 +38,7 @@ interface WatchEntry {
 	timedOut: boolean;
 	stdoutBuf: string;
 	stderrBuf: string;
+	outputTruncated: boolean;
 	lastDeliverAt: number;
 	pendingCount: number;
 	pendingLines: string[];
@@ -75,6 +76,7 @@ export class WatchSupervisor {
 	private readonly streamBackoffMaxMs: number;
 	private readonly minEverySeconds: number;
 	private onStateChange: (() => void) | undefined;
+	private shuttingDown = false;
 	private readonly entries = new Map<string, WatchEntry>();
 
 	constructor(registry: WatchRegistry, deliver: Deliver, options: SupervisorOptions = {}) {
@@ -100,6 +102,7 @@ export class WatchSupervisor {
 	 * starts it again. Other sessions' definitions and state files are untouched.
 	 */
 	async restore(sessionId: string): Promise<WatchDefinition[]> {
+		this.shuttingDown = false;
 		const definitions = (await this.registry.listDefinitions()).filter((definition) => definition.session_id === sessionId);
 		const resume: WatchEntry[] = [];
 		for (const definition of definitions) {
@@ -270,6 +273,7 @@ export class WatchSupervisor {
 	 * does not call this path; it hands the live supervisor to the new runtime.
 	 */
 	async shutdown(): Promise<void> {
+		this.shuttingDown = true;
 		for (const entry of this.entries.values()) {
 			await this.stopEntry(entry, entry.state.status, true);
 		}
@@ -297,6 +301,7 @@ export class WatchSupervisor {
 			timedOut: false,
 			stdoutBuf: "",
 			stderrBuf: "",
+			outputTruncated: false,
 			lastDeliverAt: 0,
 			pendingCount: 0,
 			pendingLines: [],
@@ -305,6 +310,7 @@ export class WatchSupervisor {
 	}
 
 	private async startEntry(entry: WatchEntry): Promise<void> {
+		if (this.shuttingDown) return;
 		if (entry.definition.mode === "poll") await this.pollTick(entry);
 		else await this.streamStart(entry);
 	}
@@ -312,11 +318,12 @@ export class WatchSupervisor {
 	// ---------------------------------------------------------------- poll --
 
 	private async pollTick(entry: WatchEntry): Promise<void> {
-		if (entry.state.status !== "running") return;
+		if (this.shuttingDown || entry.state.status !== "running") return;
 		const definition = entry.definition;
 		const child = this.spawn(entry);
 		entry.stdoutBuf = "";
 		entry.stderrBuf = "";
+		entry.outputTruncated = false;
 		entry.timedOut = false;
 		const timeoutMs = definition.timeout_seconds * 1000;
 		const timeout = setTimeout(() => {
@@ -324,8 +331,7 @@ export class WatchSupervisor {
 			child.kill("SIGKILL");
 		}, timeoutMs);
 		this.attachLineReaders(entry, child, (line, stream) => {
-			if (stream === "stdout") entry.stdoutBuf += `${line}\n`;
-			else entry.stderrBuf += `${line}\n`;
+			this.appendPollLine(entry, line, stream);
 		});
 		child.on("close", (code, signal) => {
 			clearTimeout(timeout);
@@ -350,7 +356,8 @@ export class WatchSupervisor {
 				await this.recovered(entry);
 			} else if (code === 1) {
 				const output = `${entry.stdoutBuf}${entry.stderrBuf}`.trim();
-				await this.event(entry, output || `fired at ${new Date().toISOString()}`);
+				const boundedOutput = entry.outputTruncated && output ? `${output}\n…` : output;
+				await this.event(entry, boundedOutput || `fired at ${new Date().toISOString()}`);
 			} else {
 				await this.broke(entry, code, signal, undefined);
 			}
@@ -360,20 +367,34 @@ export class WatchSupervisor {
 		await this.registry.closeLog(entry.definition.id);
 	}
 
+	private appendPollLine(entry: WatchEntry, line: string, stream: "stdout" | "stderr"): void {
+		const key = stream === "stdout" ? "stdoutBuf" : "stderrBuf";
+		const text = `${line}\n`;
+		const remaining = MAX_EVENT_BODY_CHARS - entry[key].length;
+		if (remaining <= 0) {
+			entry.outputTruncated = true;
+			return;
+		}
+		entry[key] += text.slice(0, remaining);
+		if (text.length > remaining) entry.outputTruncated = true;
+	}
+
 	private schedulePoll(entry: WatchEntry): void {
 		const everyMs = (entry.definition.every_seconds ?? DEFAULT_EVERY_SECONDS) * 1000;
 		entry.state.next_run_at = new Date(Date.now() + everyMs).toISOString();
-		void this.registry.saveState(entry.definition.id, entry.state);
-		entry.timer = setTimeout(() => {
-			entry.state.next_run_at = null;
-			void this.pollTick(entry);
-		}, everyMs);
+		void this.persistState(entry);
+		if (!this.shuttingDown) {
+			entry.timer = setTimeout(() => {
+				entry.state.next_run_at = null;
+				void this.pollTick(entry);
+			}, everyMs);
+		}
 	}
 
 	// -------------------------------------------------------------- stream --
 
 	private async streamStart(entry: WatchEntry): Promise<void> {
-		if (entry.state.status !== "running") return;
+		if (this.shuttingDown || entry.state.status !== "running") return;
 		const definition = entry.definition;
 		const wasBroken = entry.state.broken;
 		const child = this.spawn(entry);
@@ -390,7 +411,7 @@ export class WatchSupervisor {
 			entry.streamAttempt = 0;
 			entry.state.restart_attempt = 0;
 			entry.state.broken = false;
-			await this.registry.saveState(definition.id, entry.state);
+			await this.persistState(entry);
 			this.onStateChange?.();
 			await this.deliverSafely(entry, `Watch "${definition.name}": recovered (script restarted successfully).`);
 		}
@@ -416,7 +437,7 @@ export class WatchSupervisor {
 			entry.state.restart_attempt = 0;
 			entry.state.broken = false;
 			entry.state.status = "stopped";
-			await this.registry.saveState(definition.id, entry.state);
+			await this.persistState(entry);
 			this.onStateChange?.();
 			if (definition.on_finish) {
 				await this.deliverSafely(entry, finishedBody(definition, await this.registry.readLogTail(definition.id, 10)));
@@ -429,11 +450,13 @@ export class WatchSupervisor {
 		entry.state.restart_attempt = entry.streamAttempt;
 		const backoffMs = Math.min(this.streamBackoffBaseMs * 2 ** (entry.streamAttempt - 1), this.streamBackoffMaxMs);
 		entry.state.next_run_at = new Date(Date.now() + backoffMs).toISOString();
-		await this.registry.saveState(definition.id, entry.state);
-		entry.timer = setTimeout(() => {
-			entry.state.next_run_at = null;
-			void this.streamStart(entry);
-		}, backoffMs);
+		await this.persistState(entry);
+		if (!this.shuttingDown) {
+			entry.timer = setTimeout(() => {
+				entry.state.next_run_at = null;
+				void this.streamStart(entry);
+			}, backoffMs);
+		}
 		await this.registry.closeLog(definition.id);
 	}
 
@@ -454,7 +477,7 @@ export class WatchSupervisor {
 		entry.state.pid = child.pid ?? null;
 		entry.state.exit_code = null;
 		entry.state.exit_signal = null;
-		void this.registry.saveState(definition.id, entry.state);
+		void this.persistState(entry);
 		return child;
 	}
 
@@ -483,6 +506,17 @@ export class WatchSupervisor {
 		}
 	}
 
+	private async persistState(entry: WatchEntry): Promise<void> {
+		try {
+			await this.registry.saveState(entry.definition.id, entry.state);
+		} catch (error) {
+			await this.registry.appendLog(
+				entry.definition.id,
+				`[status]: state save error: ${(error as Error).message}`,
+			).catch(() => undefined);
+		}
+	}
+
 	private async recordExit(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
 		entry.state.pid = null;
 		entry.state.exit_code = code;
@@ -492,7 +526,7 @@ export class WatchSupervisor {
 				.appendLog(entry.definition.id, `[status]: script exited with ${signal ? `signal ${signal}` : `code ${code}`}`)
 				.catch(() => undefined);
 		}
-		await this.registry.saveState(entry.definition.id, entry.state);
+		await this.persistState(entry);
 	}
 
 	private async stopEntry(entry: WatchEntry, status: WatchRuntimeState["status"], preserveNextRun = false): Promise<void> {
@@ -527,7 +561,7 @@ export class WatchSupervisor {
 	private async broke(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null, reason: string | undefined): Promise<void> {
 		const first = !entry.state.broken;
 		entry.state.broken = true;
-		await this.registry.saveState(entry.definition.id, entry.state);
+		await this.persistState(entry);
 		this.onStateChange?.();
 		if (!first) return;
 		const tail = await this.registry.readLogTail(entry.definition.id, 10);
@@ -542,7 +576,7 @@ export class WatchSupervisor {
 		entry.state.broken = false;
 		entry.streamAttempt = 0;
 		entry.state.restart_attempt = 0;
-		await this.registry.saveState(entry.definition.id, entry.state);
+		await this.persistState(entry);
 		this.onStateChange?.();
 		await this.deliverSafely(entry, `Watch "${entry.definition.name}": recovered (check succeeded again).`);
 	}
@@ -596,7 +630,7 @@ export class WatchSupervisor {
 		const sinceMs = entry.state.last_fired_at ? now - Date.parse(entry.state.last_fired_at) : null;
 		entry.state.event_count = previousCount + count;
 		entry.state.last_fired_at = new Date(now).toISOString();
-		void this.registry.saveState(definition.id, entry.state);
+		void this.persistState(entry);
 		const body = count === 1
 			? truncateBody(lines[0] ?? "", MAX_EVENT_BODY_CHARS, !cappedFinal)
 			: formatCoalesced(definition, { total: count, lines }, !cappedFinal);

@@ -11,6 +11,7 @@ interface OutputState {
 	omitted_lines: number;
 	current_lines: number;
 	rotated_lines: number;
+	rotated_ends_with_newline: boolean;
 }
 
 interface FileLineStats {
@@ -32,6 +33,20 @@ export interface OutputLinesRead {
 	path: string;
 	lines: string[];
 	omittedLines: number;
+}
+
+const outputQueues = new Map<string, Promise<void>>();
+
+/** Serialize all writers, readers, rotation, and deletion for one output path in this process. */
+function serialize<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	const previous = outputQueues.get(path) ?? Promise.resolve();
+	const result = previous.then(operation);
+	const settled = result.then(() => undefined, () => undefined);
+	outputQueues.set(path, settled);
+	void settled.then(() => {
+		if (outputQueues.get(path) === settled) outputQueues.delete(path);
+	});
+	return result;
 }
 
 function safeSegment(value: string): string {
@@ -116,10 +131,11 @@ async function readState(path: string): Promise<OutputState> {
 			omitted_lines: Number.isSafeInteger(raw.omitted_lines) && (raw.omitted_lines ?? -1) >= 0 ? raw.omitted_lines! : 0,
 			current_lines: Number.isSafeInteger(raw.current_lines) && (raw.current_lines ?? -1) >= 0 ? raw.current_lines! : 0,
 			rotated_lines: Number.isSafeInteger(raw.rotated_lines) && (raw.rotated_lines ?? -1) >= 0 ? raw.rotated_lines! : 0,
+			rotated_ends_with_newline: raw.rotated_ends_with_newline !== false,
 		};
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
-			return { version: 1, omitted_lines: 0, current_lines: 0, rotated_lines: 0 };
+			return { version: 1, omitted_lines: 0, current_lines: 0, rotated_lines: 0, rotated_ends_with_newline: true };
 		}
 		throw error;
 	}
@@ -131,12 +147,35 @@ async function writeState(path: string, state: OutputState): Promise<void> {
 	await rename(temporary, statePath(path));
 }
 
-async function readIfPresent(path: string): Promise<Buffer> {
+async function fileSize(path: string): Promise<number> {
 	try {
-		return await readFile(path);
+		return (await stat(path)).size;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+		throw error;
+	}
+}
+
+async function readSlice(path: string, start: number, length: number): Promise<Buffer> {
+	if (length === 0) return Buffer.alloc(0);
+	let handle: FileHandle;
+	try {
+		handle = await open(path, "r");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return Buffer.alloc(0);
 		throw error;
+	}
+	try {
+		const buffer = Buffer.alloc(length);
+		let offset = 0;
+		while (offset < length) {
+			const result = await handle.read(buffer, offset, length - offset, start + offset);
+			if (result.bytesRead === 0) break;
+			offset += result.bytesRead;
+		}
+		return buffer.subarray(0, offset);
+	} finally {
+		await handle.close();
 	}
 }
 
@@ -147,8 +186,7 @@ export class BoundedOutput {
 	private initialized = false;
 	private currentBytes = 0;
 	private endsWithNewline = true;
-	private state: OutputState = { version: 1, omitted_lines: 0, current_lines: 0, rotated_lines: 0 };
-	private queue: Promise<void> = Promise.resolve();
+	private state: OutputState = { version: 1, omitted_lines: 0, current_lines: 0, rotated_lines: 0, rotated_ends_with_newline: true };
 
 	constructor(path: string, options: { maxSegmentBytes?: number } = {}) {
 		if (!basename(path) || basename(path) === "." || basename(path) === "..") throw new Error("Invalid output path");
@@ -158,9 +196,7 @@ export class BoundedOutput {
 	}
 
 	private enqueue(operation: () => Promise<void>): Promise<void> {
-		const result = this.queue.then(operation);
-		this.queue = result.catch(() => undefined);
-		return result;
+		return serialize(this.path, operation);
 	}
 
 	private async initialize(): Promise<void> {
@@ -175,6 +211,7 @@ export class BoundedOutput {
 			omitted_lines: previous.omitted_lines,
 			current_lines: current.lines,
 			rotated_lines: rotated.lines,
+			rotated_ends_with_newline: rotated.endsWithNewline,
 		};
 		this.handle = await open(this.path, "a", 0o600);
 		this.initialized = true;
@@ -188,8 +225,9 @@ export class BoundedOutput {
 	}
 
 	private async rotate(): Promise<void> {
+		const currentEndsWithNewline = this.endsWithNewline;
 		await this.closeCurrent();
-		const omitted = this.state.rotated_lines;
+		const omitted = Math.max(0, this.state.rotated_lines - (this.state.rotated_ends_with_newline ? 0 : 1));
 		await rm(rotatedPath(this.path), { force: true });
 		await rename(this.path, rotatedPath(this.path));
 		this.state = {
@@ -197,6 +235,7 @@ export class BoundedOutput {
 			omitted_lines: this.state.omitted_lines + omitted,
 			current_lines: 0,
 			rotated_lines: this.state.current_lines,
+			rotated_ends_with_newline: currentEndsWithNewline,
 		};
 		this.currentBytes = 0;
 		this.endsWithNewline = true;
@@ -246,7 +285,7 @@ export class BoundedOutput {
 	}
 
 	flush(): Promise<void> {
-		return this.queue;
+		return serialize(this.path, async () => undefined);
 	}
 
 	close(): Promise<void> {
@@ -259,36 +298,58 @@ export class BoundedOutput {
 	}
 }
 
-export async function readOutput(path: string, options: { maxBytes?: number; tail?: boolean } = {}): Promise<OutputRead> {
+async function readOutputNow(path: string, options: { maxBytes?: number; tail?: boolean } = {}): Promise<OutputRead> {
 	const maxBytes = options.maxBytes ?? 50 * 1024;
 	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("maxBytes must be a positive integer");
-	const [rotated, current, state] = await Promise.all([readIfPresent(rotatedPath(path)), readIfPresent(path), readState(path)]);
-	const combined = Buffer.concat([rotated, current]);
-	const length = Math.min(combined.length, maxBytes);
-	const start = options.tail === false ? 0 : combined.length - length;
-	const selected = combined.subarray(start, start + length);
+	const [rotatedBytes, currentBytes, state] = await Promise.all([
+		fileSize(rotatedPath(path)),
+		fileSize(path),
+		readState(path),
+	]);
+	const totalBytes = rotatedBytes + currentBytes;
+	const bytesRead = Math.min(totalBytes, maxBytes);
+	const selectionStart = options.tail === false ? 0 : totalBytes - bytesRead;
+	const selectionEnd = selectionStart + bytesRead;
+	const parts: Buffer[] = [];
+	for (const segment of [
+		{ path: rotatedPath(path), start: 0, end: rotatedBytes },
+		{ path, start: rotatedBytes, end: totalBytes },
+	]) {
+		const start = Math.max(selectionStart, segment.start);
+		const end = Math.min(selectionEnd, segment.end);
+		if (end > start) parts.push(await readSlice(segment.path, start - segment.start, end - start));
+	}
+	const selected = Buffer.concat(parts);
 	return {
 		path,
 		text: selected.toString("utf8"),
-		totalBytes: combined.length,
+		totalBytes,
 		bytesRead: selected.length,
-		truncated: combined.length > selected.length,
+		truncated: totalBytes > selected.length,
 		omittedLines: state.omitted_lines,
 	};
 }
 
+export function readOutput(path: string, options: { maxBytes?: number; tail?: boolean } = {}): Promise<OutputRead> {
+	return serialize(path, () => readOutputNow(path, options));
+}
+
 export async function readOutputLines(path: string, maxLines = 50): Promise<OutputLinesRead> {
 	if (!Number.isSafeInteger(maxLines) || maxLines < 1) throw new Error("maxLines must be a positive integer");
-	const result = await readOutput(path, { maxBytes: DEFAULT_OUTPUT_SEGMENT_BYTES * 2, tail: false });
+	const result = await readOutput(path, { maxBytes: DEFAULT_OUTPUT_SEGMENT_BYTES * 2, tail: true });
 	const lines = result.text.length === 0 ? [] : result.text.split("\n");
 	if (result.text.endsWith("\n")) lines.pop();
 	return { path, lines: lines.slice(-maxLines), omittedLines: result.omittedLines };
 }
 
-export async function deleteOutput(path: string): Promise<void> {
+async function deleteOutputNow(path: string): Promise<void> {
 	await Promise.all([
 		rm(path, { force: true }),
 		rm(rotatedPath(path), { force: true }),
 		rm(statePath(path), { force: true }),
 	]);
+}
+
+export function deleteOutput(path: string): Promise<void> {
+	return serialize(path, () => deleteOutputNow(path));
 }

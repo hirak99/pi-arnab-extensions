@@ -131,15 +131,8 @@ export class WatchRegistry {
 		await this.writers.get(id)?.flush();
 		const result = await readOutputLines(this.logPath(id), maxLines);
 		if (result.lines.length > 0) return result;
-		try {
-			const raw = await readFile(this.legacyLogPath(id), "utf8");
-			const lines = raw.split("\n");
-			if (lines.at(-1) === "") lines.pop();
-			return { path: this.legacyLogPath(id), lines: lines.slice(-maxLines), omittedLines: 0 };
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return result;
-			throw error;
-		}
+		const legacy = await readOutputLines(this.legacyLogPath(id), maxLines);
+		return legacy.lines.length > 0 ? legacy : result;
 	}
 
 	async readLogTail(id: string, maxLines: number): Promise<string[]> {

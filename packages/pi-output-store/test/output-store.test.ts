@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -54,6 +54,7 @@ test("large chunks are split without exceeding the segment byte bound", async (t
 	assert.equal((await stat(path)).size <= 5, true);
 	assert.equal((await stat(`${path}.1`)).size <= 5, true);
 	assert.equal((await readOutput(path, { maxBytes: 50 })).text, "67890123");
+	assert.equal((await readOutput(path, { maxBytes: 50 })).omittedLines, 0, "one long logical line is not counted per discarded fragment");
 });
 
 test("close and reopen preserve omitted-line accounting and missing files are readable", async (t) => {
@@ -68,6 +69,33 @@ test("close and reopen preserve omitted-line accounting and missing files are re
 	await output.delete();
 	assert.deepEqual(await readOutputLines(path), { path, lines: [], omittedLines: 0 });
 	assert.equal((await readOutput(path)).text, "");
+});
+
+test("byte reads use bounded positional slices even for sparse legacy-scale files", async (t) => {
+	const path = await fixture(t);
+	await writeFile(path, "");
+	await truncate(path, 1024 * 1024 * 1024);
+	const result = await readOutput(path, { maxBytes: 16, tail: true });
+	assert.equal(result.totalBytes, 1024 * 1024 * 1024);
+	assert.equal(result.bytesRead, 16);
+	assert.equal(result.text.length, 16);
+	assert.equal(result.truncated, true);
+});
+
+test("line reads select actual recent lines for oversized existing files", async (t) => {
+	const path = await fixture(t);
+	await writeFile(path, "old\n".repeat(6 * 1024 * 1024));
+	await writeFile(path, "first\nlast\n", { flag: "a" });
+	assert.deepEqual((await readOutputLines(path, 2)).lines, ["first", "last"]);
+});
+
+test("a concurrent read observes output before or after a serialized append, never a partial rotation", async (t) => {
+	const path = await fixture(t);
+	const output = new BoundedOutput(path, { maxSegmentBytes: 8 });
+	await output.append("aa\n");
+	const [, result] = await Promise.all([output.append("bb\ncc\n"), readOutput(path)]);
+	assert.ok(["aa\n", "aa\nbb\ncc\n"].includes(result.text), JSON.stringify(result.text));
+	await output.close();
 });
 
 test("byte reads span rotated and current segments and report truncation", async (t) => {
