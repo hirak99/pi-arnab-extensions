@@ -1,22 +1,24 @@
 # pi-background-jobs
 
-Focused background shell jobs for Pi. Five tools, temporary bounded output,
+Focused background shell jobs for Pi. Six tools, temporary bounded output,
 automatic completion notifications, a session footer, and no agent/provider
 subsystems.
 
-**Related project:** I’ve used [`pi-background-tasks`](https://pi.dev/packages/pi-background-tasks), and it manages background tasks very well—do take a look, especially if you also need delegated agents, Fusion workflows, attested runs, or Anthropic attribution. This smaller package simply reflects my own preferences: [`pi-subagents`](https://github.com/tintinweb/pi-subagents) already handles agents, I only need run/status/logs/kill/clear here, and every job survives `/reload` by default.
+**Related project:** I’ve used [`pi-background-tasks`](https://pi.dev/packages/pi-background-tasks), and it manages background tasks very well—do take a look, especially if you also need delegated agents, Fusion workflows, attested runs, or Anthropic attribution. This smaller package simply reflects my own preferences: [`pi-subagents`](https://github.com/tintinweb/pi-subagents) already handles agents, I only need run/status/logs/export/kill/clear here, and every job survives `/reload` by default.
 
 ## Features
 
-- `job_run`, `job_status`, `job_logs`, `job_kill`, and `job_clear`
+- `job_run`, `job_status`, `job_logs`, `job_export`, `job_kill`, and `job_clear`
 - `/jobs` lists running and recent session jobs; `/jobs clear` permanently
-  removes finished jobs and their files
+  removes finished jobs and their internal files
 - `/reload` preserves every running job with the same process, PID, output
   streams, start time, and absolute timeout
 - Full Pi shutdown stops running jobs; restart preserves history but never
   relaunches commands or adopts persisted PIDs
 - POSIX process groups let timeout and kill terminate the whole process tree
 - Combined stdout/stderr recent output with bounded 50 KB tool reads
+- Atomic permanent export of all retained output across both segments
+- Internal output paths stay out of tool results, notifications, and job listings
 - Per-user private temporary storage and two-segment byte rotation; jobs never
   fail merely because their output grows
 - Session-scoped status, logs, and lifecycle operations
@@ -46,16 +48,19 @@ job_run(name="Tests", command="npm test", timeoutSeconds=300)
 job_status()
 job_status(taskId="<id-or-unique-prefix>")
 job_logs(taskId="<id>", tail=true, maxBytes=50000)
+job_export(taskId="<id>", path="/explicit/permanent.log")
+job_export(taskId="<id>", path="/explicit/permanent.log", overwrite=true)
 job_kill(taskId="<id>")
 job_clear(taskId="<id-or-unique-prefix>")
 job_clear(allFinished=true)
 ```
 
 `job_run` uses `/bin/bash -c` with the current directory and environment. It
-returns immediately with only the generated job ID and output path; use
-`job_status` for runtime details. Status results retain diagnostic fields but
-omit the command and owning session ID. Completion starts a native follow-up
-turn; do not poll
+returns immediately with only the generated job ID; use `job_status` for runtime
+details. Internal output paths are deliberately not exposed. Use `job_logs` for
+bounded inspection and `job_export` when retained output must be saved
+permanently. Status results retain diagnostic fields but omit the command and
+owning session ID. Completion starts a native follow-up turn; do not poll
 `job_status` or `job_logs` merely to wait. Commands run with the user's normal
 OS permissions and are not sandboxed.
 
@@ -68,7 +73,7 @@ lists the jobs and clears their unseen footer notices. `/jobs clear` and
 killed jobs owned by the current session, including their metadata and output
 logs. `job_clear(taskId=...)` removes one finished job and returns a concise
 acknowledgment without echoing its supplied ID. `job_kill` likewise returns only
-final status and output path. Running jobs are always
+final status. Running jobs are always
 untouched: single-job cleanup rejects them with an error and changes nothing.
 Deletion is permanent, so failed-job logs should be inspected or deliberately
 deemed unnecessary before cleanup. The entire footer item has a blue background
@@ -83,16 +88,25 @@ under `${os.tmpdir()}/pi-<username>/background-jobs/<session-id>/`; the private
 per-user root is mode `0700` and output files are mode `0600`. Set
 `PI_JOBS_OUTPUT_DIR` only when an explicit alternate output parent is needed.
 
-Each job has JSON metadata plus a fixed `.output` path and at most one `.output.1`
-rotated segment. Each segment is bounded to 10 MiB. Rotation keeps recent output
-without failing or truncating the job itself. A small temporary state file
-tracks cumulative omitted lines; `job_logs` reports `omitted_lines` only when
-older output has actually been discarded. Tool reads remain capped at 50 KB and
-span both retained segments.
+Each job has JSON metadata plus an internal fixed `.output` path and at most one
+`.output.1` rotated segment. Each segment is bounded to 10 MiB. Rotation keeps
+recent output without failing or truncating the job itself. A small temporary
+state file tracks cumulative omitted lines; `job_logs` reports `omitted_lines`
+only when older output has actually been discarded. Tool reads remain capped at
+50 KB and span both retained segments.
+
+`job_export` saves a consistent point-in-time snapshot of both retained segments
+in chronological order, without the 50 KB inspection cap. Relative destinations
+resolve against the session working directory. Export writes a temporary sibling
+and atomically publishes it, refusing an existing destination unless
+`overwrite:true` is explicit. It works for running and finished jobs; export
+after completion when final output is required. The result reports
+`bytes_written` and, when applicable, `omitted_lines`. Exported files are
+independent and are never removed by `job_clear`.
 
 Temporary output may disappear during external temporary-directory cleanup or
-reboot. Cold restore and log reads tolerate missing files. Copy output to an
-explicit permanent location if it must outlive the job or temporary storage.
+reboot. Cold restore and log reads tolerate missing files. Use `job_export` to
+save retained output to an explicit permanent location.
 Ending, failing, or killing a job retains its recent output; only `job_clear`,
 `/jobs clear`, external temporary cleanup, or explicit deletion removes it.
 

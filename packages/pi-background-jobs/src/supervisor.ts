@@ -135,6 +135,13 @@ export class JobSupervisor {
 		return this.store.readLogs(entry.task, tail, maxBytes);
 	}
 
+	async exportOutput(idOrPrefix: string, sessionId: string, destination: string, overwrite: boolean) {
+		if (!this.store) throw new Error("job session is not initialized");
+		const entry = this.resolve(idOrPrefix, sessionId);
+		await entry.log?.flush();
+		return this.store.exportOutput(entry.task, destination, overwrite);
+	}
+
 	markSeen(sessionId: string): void {
 		for (const entry of this.entries.values()) {
 			if (entry.task.session_id === sessionId) entry.seen = true;

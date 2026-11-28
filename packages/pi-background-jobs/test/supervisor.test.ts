@@ -217,8 +217,30 @@ test("session isolation and bounded log reads are enforced", async (t) => {
 	await assert.rejects(() => supervisor.readLogs(started.id, sessionId, true, 50_001), /maxBytes/);
 });
 
+test("running-job export is a point-in-time snapshot and can be refreshed", async (t) => {
+	const { root, supervisor, sessionId } = await fixture(t);
+	const started = await supervisor.start(sessionId, {
+		name: "Running export",
+		command: "printf before; sleep 0.2; printf after",
+		cwd: "/tmp",
+	});
+	for (let attempt = 0; attempt < 100; attempt++) {
+		if ((await readFile(started.output_path, "utf8").catch(() => "")).includes("before")) break;
+		await delay(10);
+	}
+	const destination = join(root, "saved", "running.log");
+	const snapshot = await supervisor.exportOutput(started.id, sessionId, destination, false);
+	assert.deepEqual(snapshot, { bytes_written: 6 });
+	assert.equal(await readFile(destination, "utf8"), "before");
+	assert.equal(supervisor.resolve(started.id, sessionId).task.status, "running");
+	await supervisor.resolve(started.id, sessionId).done;
+	const final = await supervisor.exportOutput(started.id, sessionId, destination, true);
+	assert.deepEqual(final, { bytes_written: 11 });
+	assert.equal(await readFile(destination, "utf8"), "beforeafter");
+});
+
 test("job output rotates without failing and clear removes every segment", async (t) => {
-	const { supervisor, delivered, sessionId } = await fixture(t, "job-rotation-session", 16);
+	const { root, supervisor, delivered, sessionId } = await fixture(t, "job-rotation-session", 16);
 	const started = await supervisor.start(sessionId, {
 		name: "Bounded output",
 		command: "for i in $(seq 1 20); do printf '%s\\n' \"$i\"; done",
@@ -231,7 +253,16 @@ test("job output rotates without failing and clear removes every segment", async
 	const logs = await supervisor.readLogs(started.id, sessionId, true);
 	assert.ok((logs.omitted_lines ?? 0) > 0);
 	assert.doesNotMatch(logs.text, /(?:^|\n)1\n/);
+	const destination = join(root, "exports", "retained.log");
+	const exported = await supervisor.exportOutput(started.id, sessionId, destination, false);
+	assert.equal(exported.omitted_lines, logs.omitted_lines);
+	assert.equal(exported.bytes_written, Buffer.byteLength(await readFile(destination, "utf8")));
+	assert.equal(
+		await readFile(destination, "utf8"),
+		await readFile(`${started.output_path}.1`, "utf8") + await readFile(started.output_path, "utf8"),
+	);
 	await supervisor.clear(started.id, sessionId);
+	await stat(destination);
 	for (const path of [started.output_path, `${started.output_path}.1`, `${started.output_path}.state.json`]) {
 		await assert.rejects(() => stat(path), { code: "ENOENT" });
 	}

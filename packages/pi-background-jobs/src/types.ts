@@ -17,10 +17,13 @@ export interface JobTask {
 	deadline_at: string | null;
 }
 
+export interface JobExport {
+	bytes_written: number;
+	omitted_lines?: number;
+}
+
 export interface JobLogs {
-	task: JobTask;
 	text: string;
-	path: string;
 	tail: boolean;
 	bytesRead: number;
 	truncated: boolean;

@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, rename, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, open, readFile, rename, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export const DEFAULT_OUTPUT_SEGMENT_BYTES = 10 * 1024 * 1024;
@@ -32,6 +32,11 @@ export interface OutputRead {
 export interface OutputLinesRead {
 	path: string;
 	lines: string[];
+	omittedLines: number;
+}
+
+export interface OutputExport {
+	bytesWritten: number;
 	omittedLines: number;
 }
 
@@ -340,6 +345,72 @@ export async function readOutputLines(path: string, maxLines = 50): Promise<Outp
 	const lines = result.text.length === 0 ? [] : result.text.split("\n");
 	if (result.text.endsWith("\n")) lines.pop();
 	return { path, lines: lines.slice(-maxLines), omittedLines: result.omittedLines };
+}
+
+async function copySegment(source: string, destination: FileHandle): Promise<number> {
+	let input: FileHandle;
+	try {
+		input = await open(source, "r");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+		throw error;
+	}
+	let copied = 0;
+	try {
+		const buffer = Buffer.alloc(128 * 1024);
+		while (true) {
+			const { bytesRead } = await input.read(buffer, 0, buffer.length, copied);
+			if (bytesRead === 0) break;
+			let offset = 0;
+			while (offset < bytesRead) {
+				const { bytesWritten } = await destination.write(buffer, offset, bytesRead - offset);
+				if (bytesWritten === 0) throw new Error("Could not write exported output");
+				offset += bytesWritten;
+			}
+			copied += bytesRead;
+		}
+	} finally {
+		await input.close();
+	}
+	return copied;
+}
+
+async function exportOutputNow(path: string, destinationPath: string, overwrite: boolean): Promise<OutputExport> {
+	if (!destinationPath) throw new Error("Export destination is required");
+	const source = resolve(path);
+	const destination = resolve(destinationPath);
+	if ([source, resolve(rotatedPath(path)), resolve(statePath(path))].includes(destination)) {
+		throw new Error("Export destination must differ from internal output files");
+	}
+	await mkdir(dirname(destination), { recursive: true });
+	const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+	let output: FileHandle | undefined;
+	try {
+		output = await open(temporary, "wx", 0o600);
+		const bytesWritten = await copySegment(rotatedPath(path), output) + await copySegment(path, output);
+		const state = await readState(path);
+		await output.close();
+		output = undefined;
+		if (overwrite) {
+			await rename(temporary, destination);
+		} else {
+			// Publishing by hard link makes no-overwrite creation atomic.
+			await link(temporary, destination);
+			await rm(temporary, { force: true }).catch(() => undefined);
+		}
+		return { bytesWritten, omittedLines: state.omitted_lines };
+	} catch (error) {
+		if (output) await output.close().catch(() => undefined);
+		await rm(temporary, { force: true }).catch(() => undefined);
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+			throw new Error(`Export destination already exists: ${destination}`);
+		}
+		throw error;
+	}
+}
+
+export function exportOutput(path: string, destinationPath: string, options: { overwrite?: boolean } = {}): Promise<OutputExport> {
+	return serialize(path, () => exportOutputNow(path, destinationPath, options.overwrite ?? false));
 }
 
 async function deleteOutputNow(path: string): Promise<void> {

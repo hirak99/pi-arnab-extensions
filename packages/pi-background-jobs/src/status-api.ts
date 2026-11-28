@@ -10,7 +10,7 @@ export const JOB_RESPONSE_SCHEMA = "pi-background-jobs.extension-response.v1";
 /** Optional display-only status API; no package import or producer dependency is required. */
 export function registerJobStatusApi(
 	pi: Pick<ExtensionAPI, "events">,
-	list: () => JobTask[],
+	list: () => Array<Pick<JobTask, "id" | "name" | "status">>,
 ): () => void {
 	return pi.events.on(JOB_REQUEST_CHANNEL, (event: any) => {
 		if (event?.schema_version !== JOB_REQUEST_SCHEMA || event?.operation !== "status") return;

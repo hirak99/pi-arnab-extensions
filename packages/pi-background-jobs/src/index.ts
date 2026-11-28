@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -12,7 +12,7 @@ import { colorStatus } from "./status-color.ts";
 import { JobSupervisor } from "./supervisor.ts";
 import type { JobTask } from "./types.ts";
 
-const TOOL_NAMES = ["job_run", "job_status", "job_logs", "job_kill", "job_clear"] as const;
+const TOOL_NAMES = ["job_run", "job_status", "job_logs", "job_export", "job_kill", "job_clear"] as const;
 const JOB_NOTIFICATION_TYPE = "background-job-finished";
 const RELOAD_BRIDGE_KEY = Symbol.for("pi-background-jobs.supervisor");
 
@@ -20,7 +20,6 @@ interface JobNotificationDetails {
 	id: string;
 	name: string;
 	status: JobTask["status"];
-	outputPath: string;
 	error: string | null;
 }
 
@@ -49,7 +48,6 @@ function jobStatusSummary(task: JobTask) {
 		name: task.name,
 		status: task.status,
 		pid: task.pid,
-		output_path: task.output_path,
 		created_at: task.created_at,
 		completed_at: task.completed_at,
 		exit_code: task.exit_code,
@@ -72,7 +70,6 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 			id: task.id,
 			name: task.name,
 			status: task.status,
-			outputPath: task.output_path,
 			error: task.error,
 		};
 		sendNativeNotification(pi, {
@@ -105,7 +102,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 		if (loadConflict) throw new Error(loadConflict);
 	}
 
-	const statusApiUnsub = registerJobStatusApi(pi, () => sessionId ? supervisor.list(sessionId) : []);
+	const statusApiUnsub = registerJobStatusApi(pi, () => sessionId ? supervisor.list(sessionId).map(jobStatusSummary) : []);
 
 	pi.registerMessageRenderer<JobNotificationDetails>(JOB_NOTIFICATION_TYPE, (message, _options, theme) => {
 		const task = message.details;
@@ -113,9 +110,8 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 		const color = status === "completed" ? "success" : status === "failed" ? "error" : status === "killed" ? "warning" : "accent";
 		const name = task?.name ?? "Background job";
 		const id = task?.id ?? "unknown";
-		const output = task?.outputPath ? `\n${theme.fg("dim", `Output: ${task.outputPath}`)}` : "";
 		const error = task?.error ? `\n${theme.fg("error", task.error)}` : "";
-		return new Text(`${theme.fg(color, `[job ${status}]`)} ${theme.fg("accent", name)} ${theme.fg("dim", `(${id})`)}${output}${error}`, 0, 0);
+		return new Text(`${theme.fg(color, `[job ${status}]`)} ${theme.fg("accent", name)} ${theme.fg("dim", `(${id})`)}${error}`, 0, 0);
 	});
 
 	pi.on("session_start", async (event, ctx) => {
@@ -185,13 +181,13 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "job_run",
 		label: "Run background job",
-		description: "Start a named long-running shell command as a background job and return immediately with a task ID and temporary output path. Every job survives /reload with the same PID, streams, and absolute timeout. Output is privately stored under the OS temporary directory and bounded by two-segment byte rotation. Full Pi shutdown stops running jobs; restart retains history but never relaunches them. Completion automatically sends a native notification and follow-up turn.",
+		description: "Start a named long-running shell command as a background job and return immediately with a task ID. Every job survives /reload with the same PID, streams, and absolute timeout. Output is privately stored under the OS temporary directory and bounded by two-segment byte rotation. Full Pi shutdown stops running jobs; restart retains history but never relaunches them. Completion automatically sends a native notification and follow-up turn.",
 		promptSnippet: "Start a background shell job that survives /reload and notifies on completion",
 		promptGuidelines: [
 			"Use job_run instead of bash for commands expected to run for a long time, such as test suites, dev servers, watchers, or builds.",
 			"job_run returns immediately. Do not sleep or repeatedly call job_status/job_logs merely to wait; the terminal notification starts a follow-up turn.",
 			"Use job_status for deliberate inspection and job_logs only when output is needed. Use job_kill when the user asks to stop a job or it is no longer needed.",
-			"Output is temporary and retains only the current and previous bounded segments. Copy it to an explicit permanent path before job_clear or system temporary-directory cleanup if it must be preserved.",
+			"Output paths are internal implementation details. Use job_logs for bounded inspection and job_export to save all retained output to an explicit permanent path.",
 		],
 		parameters: Type.Object({
 			name: Type.String({ description: "Short human-readable job name for the footer and notifications" }),
@@ -206,7 +202,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				timeoutSeconds: params.timeoutSeconds,
 			});
-			return toolResult({ id: task.id, output_path: task.output_path });
+			return toolResult({ id: task.id });
 		},
 	});
 
@@ -243,12 +239,34 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 			const logs = await supervisor.readLogs(params.taskId, owningSessionId(), params.tail ?? true, params.maxBytes);
 			const notices: string[] = [];
 			if (logs.omitted_lines) notices.push(`${logs.omitted_lines} earlier lines omitted by output rotation.`);
-			if (logs.truncated) notices.push(`Showing ${logs.tail ? "last" : "first"} ${logs.bytesRead} retained bytes from ${logs.path} and its previous segment when present.`);
+			if (logs.truncated) notices.push(`Showing ${logs.tail ? "last" : "first"} ${logs.bytesRead} retained bytes from the current and previous output segments.`);
 			const prefix = notices.length ? `${notices.join("\n")}\n\n` : "";
 			return {
 				content: [{ type: "text" as const, text: prefix + logs.text }],
 				details: logs,
 			};
+		},
+	});
+
+	pi.registerTool({
+		name: "job_export",
+		label: "Export background job output",
+		description: "Atomically save a consistent point-in-time snapshot of all retained background-job output to an explicit destination. Exports both retained segments in chronological order and is not limited to the 50 KB job_logs read cap. Existing destinations are refused unless overwrite is true. Exported files are independent of later job_clear operations.",
+		promptSnippet: "Save all retained background-job output to a permanent file",
+		promptGuidelines: [
+			"Use job_export only when retained output must be saved to a permanent file; use job_logs for ordinary bounded inspection.",
+			"For a running job, the snapshot includes output captured at export time. Export after the completion notification when final output is required.",
+			"Relative destinations resolve against the session working directory. Existing destinations require explicit overwrite:true.",
+		],
+		parameters: Type.Object({
+			taskId: Type.String({ description: "Exact job ID or unique prefix" }),
+			path: Type.String({ minLength: 1, description: "Destination file path, absolute or relative to the session working directory" }),
+			overwrite: Type.Optional(Type.Boolean({ description: "Replace an existing destination atomically when true; default false" })),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			guardConflicts();
+			const result = await supervisor.exportOutput(params.taskId, owningSessionId(), resolve(ctx.cwd, params.path), params.overwrite ?? false);
+			return toolResult(result);
 		},
 	});
 
@@ -263,7 +281,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			guardConflicts();
 			const task = await supervisor.kill(params.taskId, owningSessionId());
-			return toolResult({ status: task.status, output_path: task.output_path });
+			return toolResult({ status: task.status });
 		},
 	});
 

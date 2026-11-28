@@ -2,9 +2,9 @@ import { mkdir, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readJson, writeJsonAtomic } from "pi-durable-inbox";
-import { deleteOutput, readOutput } from "pi-output-store";
+import { deleteOutput, exportOutput, readOutput } from "pi-output-store";
 
-import { DEFAULT_LOG_BYTES, MAX_LOG_BYTES, type JobLogs, type JobTask } from "./types.ts";
+import { DEFAULT_LOG_BYTES, MAX_LOG_BYTES, type JobExport, type JobLogs, type JobTask } from "./types.ts";
 
 export class JobStore {
 	readonly root: string;
@@ -65,12 +65,18 @@ export class JobStore {
 		}
 		const result = await readOutput(task.output_path, { maxBytes, tail });
 		return {
-			task,
 			text: result.text,
-			path: result.path,
 			tail,
 			bytesRead: result.bytesRead,
 			truncated: result.truncated,
+			...(result.omittedLines > 0 ? { omitted_lines: result.omittedLines } : {}),
+		};
+	}
+
+	async exportOutput(task: JobTask, destination: string, overwrite: boolean): Promise<JobExport> {
+		const result = await exportOutput(task.output_path, destination, { overwrite });
+		return {
+			bytes_written: result.bytesWritten,
 			...(result.omittedLines > 0 ? { omitted_lines: result.omittedLines } : {}),
 		};
 	}

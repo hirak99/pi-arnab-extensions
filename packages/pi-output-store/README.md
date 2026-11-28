@@ -10,6 +10,8 @@ extension.
 - Persists cumulative omitted-line accounting in a small temporary sidecar.
 - Reads recent output across both segments, tolerates missing temporary files,
   and deletes current, rotated, and accounting artifacts together.
+- Atomically exports a consistent snapshot of every retained byte across both
+  segments, with explicit overwrite control and no inspection-size cap.
 
 See `src/index.ts` for the API and package tests for lifecycle examples.
 

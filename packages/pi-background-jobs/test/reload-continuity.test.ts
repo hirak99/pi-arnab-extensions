@@ -10,6 +10,10 @@ import type { JobTask } from "../src/types.ts";
 
 const SESSION = "background-job-reload-session";
 
+function internalOutputPath(root: string, id: string): string {
+	return join(root, "output", SESSION, `${id}.output`);
+}
+
 async function waitFor(predicate: () => boolean, what: string): Promise<void> {
 	const deadline = Date.now() + 3_000;
 	while (!predicate()) {
@@ -93,10 +97,12 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 		name: "Reload continuity",
 		command: `echo $$ >> ${marker}; sleep 0.4; echo finished`,
 	});
-	assert.deepEqual(Object.keys(startedResult.details).sort(), ["id", "output_path"]);
+	assert.deepEqual(Object.keys(startedResult.details), ["id"]);
 	const started = (await first.call("job_status", { taskId: startedResult.details.id })).details.tasks[0] as JobTask;
 	assert.equal(started.command, undefined);
 	assert.equal(started.session_id, undefined);
+	assert.equal(started.output_path, undefined);
+	const startedOutput = internalOutputPath(root, started.id);
 	const originalPid = started.pid;
 	assert.ok(originalPid);
 	assert.match(first.statuses.at(-1) ?? "", /1 job running/);
@@ -116,9 +122,10 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	assert.equal(first.notifications.length, 0);
 	assert.equal(second.notifications[0].customType, "background-job-finished");
 	assert.equal(second.notifications[0].details.status, "completed");
+	assert.equal(second.notifications[0].details.outputPath, undefined);
 	assert.match(second.statuses.at(-1) ?? "", /1 finished/);
 	assert.doesNotMatch(second.statuses.at(-1) ?? "", /\x1b\[/, "finished-only footer has no ANSI background");
-	assert.match(await readFile(started.output_path, "utf8"), /finished\n/);
+	assert.match(await readFile(startedOutput, "utf8"), /finished\n/);
 	await second.command();
 	assert.equal(second.statuses.at(-1), undefined, "/jobs clears unseen terminal footer state");
 
@@ -135,7 +142,47 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	assert.equal((await readFile(marker, "utf8")).trim().split("\n").length, 1, "cold restart did not relaunch history");
 	await third.command("clear");
 	await assert.rejects(() => third.call("job_status", { taskId: started.id }), /job not found/);
-	await assert.rejects(() => readFile(started.output_path), /ENOENT/);
+	await assert.rejects(() => readFile(startedOutput), /ENOENT/);
+});
+
+test("tool surface hides internal paths and job_export exceeds the inspection cap", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-background-jobs-export-"));
+	const previousRoot = process.env.PI_JOBS_DIR;
+	const previousOutputRoot = process.env.PI_JOBS_OUTPUT_DIR;
+	process.env.PI_JOBS_DIR = root;
+	process.env.PI_JOBS_OUTPUT_DIR = join(root, "output");
+	const harness = createHarness(backgroundJobsExtension);
+	t.after(async () => {
+		await harness.shutdown("quit").catch(() => undefined);
+		if (previousRoot === undefined) delete process.env.PI_JOBS_DIR;
+		else process.env.PI_JOBS_DIR = previousRoot;
+		if (previousOutputRoot === undefined) delete process.env.PI_JOBS_OUTPUT_DIR;
+		else process.env.PI_JOBS_OUTPUT_DIR = previousOutputRoot;
+		await rm(root, { recursive: true, force: true });
+	});
+	await harness.start("startup");
+	const started = await harness.call("job_run", {
+		name: "Export",
+		command: "printf '%060000d' 0",
+	});
+	assert.deepEqual(Object.keys(started.details), ["id"]);
+	await waitFor(() => harness.notifications.length === 1, "export job completion");
+	const status = await harness.call("job_status", { taskId: started.details.id });
+	assert.equal(status.details.tasks[0].output_path, undefined);
+	const logs = await harness.call("job_logs", { taskId: started.details.id, maxBytes: 10 });
+	assert.equal(logs.details.path, undefined);
+	assert.equal(logs.details.task, undefined);
+	assert.equal(logs.details.bytesRead, 10);
+	assert.doesNotMatch(logs.content[0].text, /\.output|pi-background-jobs-export-/);
+	assert.doesNotMatch(harness.notifications[0].content, /\.output/);
+	assert.equal(harness.notifications[0].details.outputPath, undefined);
+
+	const destination = join(root, "permanent", "saved.log");
+	const exported = await harness.call("job_export", { taskId: started.details.id, path: destination });
+	assert.deepEqual(exported.details, { bytes_written: 60_000 });
+	assert.equal((await readFile(destination, "utf8")).length, 60_000);
+	await harness.call("job_clear", { taskId: started.details.id });
+	assert.equal((await readFile(destination, "utf8")).length, 60_000);
 });
 
 test("job_clear validates input and deletes only finished jobs", async (t) => {
@@ -157,15 +204,15 @@ test("job_clear validates input and deletes only finished jobs", async (t) => {
 	const running = (await harness.call("job_run", {
 		name: "Running",
 		command: "sleep 60",
-	})).details as { id: string; output_path: string };
+	})).details as { id: string };
 	const completed = (await harness.call("job_run", {
 		name: "Completed",
 		command: "printf completed",
-	})).details as { id: string; output_path: string };
+	})).details as { id: string };
 	const failed = (await harness.call("job_run", {
 		name: "Failed",
 		command: "exit 7",
-	})).details as { id: string; output_path: string };
+	})).details as { id: string };
 	await waitFor(() => harness.notifications.length === 2, "two terminal jobs");
 
 	await assert.rejects(() => harness.call("job_clear", {}), /exactly one/);
@@ -175,16 +222,18 @@ test("job_clear validates input and deletes only finished jobs", async (t) => {
 		/exactly one/,
 	);
 	await assert.rejects(() => harness.call("job_clear", { taskId: running.id }), /cannot clear running job/);
-	await readFile(running.output_path);
+	const runningOutput = internalOutputPath(root, running.id);
+	const completedOutput = internalOutputPath(root, completed.id);
+	await readFile(runningOutput);
 	await readFile(join(root, SESSION, `${running.id}.json`));
 
 	const single = await harness.call("job_clear", { taskId: completed.id });
 	assert.equal(single.details.count, 1);
 	assert.equal(single.details.cleared, undefined);
 	assert.deepEqual(single.content, [{ type: "text", text: "Finished job cleared." }]);
-	await assert.rejects(() => readFile(completed.output_path), /ENOENT/);
+	await assert.rejects(() => readFile(completedOutput), /ENOENT/);
 	await assert.rejects(() => readFile(join(root, SESSION, `${completed.id}.json`)), /ENOENT/);
-	await readFile(running.output_path);
+	await readFile(runningOutput);
 
 	const bulk = await harness.call("job_clear", { allFinished: true });
 	assert.equal(bulk.details.count, 1);
@@ -192,11 +241,11 @@ test("job_clear validates input and deletes only finished jobs", async (t) => {
 	const remaining = (await harness.call("job_status", {})).details.tasks as JobTask[];
 	assert.deepEqual(remaining.map((task) => task.id), [running.id]);
 	assert.equal(remaining[0]?.status, "running");
-	await readFile(running.output_path);
+	await readFile(runningOutput);
 
 	const killed = await harness.call("job_kill", { taskId: running.id });
 	assert.equal(killed.details.id, undefined);
 	assert.equal(killed.details.status, "killed");
-	assert.equal(killed.details.output_path, running.output_path);
+	assert.equal(killed.details.output_path, undefined);
 	assert.equal(killed.details.command, undefined);
 });

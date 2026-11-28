@@ -17,7 +17,7 @@ export function formatJobList(tasks: JobTask[]): string {
 		const runtime = task.completed_at
 			? `finished ${task.completed_at}`
 			: `started ${task.created_at}${task.pid ? ` · PID ${task.pid}` : ""}`;
-		return `${task.id}  ${task.status}  ${task.name}\n  ${runtime}\n  Output: ${task.output_path}`;
+		return `${task.id}  ${task.status}  ${task.name}\n  ${runtime}`;
 	}).join("\n\n");
 }
 
@@ -32,8 +32,7 @@ export function jobNotificationText(task: JobTask): string {
 	return [
 		`<background-job-finished>`,
 		`Background job ${JSON.stringify(task.name)} (${task.id}) ${outcome}.${exit}${error}`,
-		`Output: ${task.output_path}`,
-		`Use job_logs with taskId ${task.id} if output is needed.`,
+		`Use job_logs with taskId ${task.id} for bounded inspection, or job_export to save all retained output.`,
 		`</background-job-finished>`,
 	].join("\n");
 }

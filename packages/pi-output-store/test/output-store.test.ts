@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { BoundedOutput, deleteOutput, ensureTemporaryOutputRoot, readOutput, readOutputLines, temporaryOutputBase } from "../src/index.ts";
+import { BoundedOutput, deleteOutput, ensureTemporaryOutputRoot, exportOutput, readOutput, readOutputLines, temporaryOutputBase } from "../src/index.ts";
 
 async function fixture(t: TestContext) {
 	const root = await mkdtemp(join(tmpdir(), "pi-output-store-test-"));
@@ -96,6 +96,39 @@ test("a concurrent read observes output before or after a serialized append, nev
 	const [, result] = await Promise.all([output.append("bb\ncc\n"), readOutput(path)]);
 	assert.ok(["aa\n", "aa\nbb\ncc\n"].includes(result.text), JSON.stringify(result.text));
 	await output.close();
+});
+
+test("export snapshots all retained segments and preserves overwrite safety", async (t) => {
+	const path = await fixture(t);
+	const output = new BoundedOutput(path, { maxSegmentBytes: 8 });
+	for (let index = 1; index <= 13; index++) await output.append(`${index}\n`);
+	await output.close();
+	const destination = `${path}.saved`;
+	const exported = await exportOutput(path, destination);
+	assert.deepEqual(exported, { bytesWritten: 14, omittedLines: 8 });
+	assert.equal(await readFile(destination, "utf8"), "9\n10\n11\n12\n13\n");
+	await assert.rejects(() => exportOutput(path, destination), /already exists/);
+	assert.equal(await readFile(destination, "utf8"), "9\n10\n11\n12\n13\n");
+	await output.append("14\n");
+	const replaced = await exportOutput(path, destination, { overwrite: true });
+	assert.equal(replaced.bytesWritten, 9);
+	assert.equal(replaced.omittedLines, 11);
+	assert.equal(await readFile(destination, "utf8"), "12\n13\n14\n");
+	await assert.rejects(() => exportOutput(path, path, { overwrite: true }), /must differ/);
+	await output.close();
+});
+
+test("export is a consistent snapshot and missing output exports as empty", async (t) => {
+	const path = await fixture(t);
+	const output = new BoundedOutput(path, { maxSegmentBytes: 8 });
+	await output.append("aa\n");
+	const destination = `${path}.snapshot`;
+	const [, exported] = await Promise.all([output.append("bb\ncc\n"), exportOutput(path, destination)]);
+	assert.equal(exported.bytesWritten, 9);
+	assert.equal(await readFile(destination, "utf8"), "aa\nbb\ncc\n");
+	await output.delete();
+	assert.deepEqual(await exportOutput(path, `${path}.empty`), { bytesWritten: 0, omittedLines: 0 });
+	assert.equal(await readFile(`${path}.empty`, "utf8"), "");
 });
 
 test("byte reads span rotated and current segments and report truncation", async (t) => {
