@@ -1,13 +1,28 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { formatJobsStatus, jobNotificationText } from "../src/format.ts";
 import { JobSupervisor } from "../src/supervisor.ts";
 import type { JobTask } from "../src/types.ts";
+
+const execFileAsync = promisify(execFile);
+
+async function assertProcessTerminated(pid: number): Promise<void> {
+	let state = "";
+	try {
+		state = (await execFileAsync("ps", ["-o", "stat=", "-p", String(pid)])).stdout.trim();
+	} catch (error) {
+		if ((error as { code?: number }).code === 1) return; // ps: no matching process
+		throw error;
+	}
+	assert.ok(state === "" || state.startsWith("Z"), `process ${pid} is still running (state ${state})`);
+}
 
 async function fixture(t: test.TestContext, sessionId = "job-test-session", maxSegmentBytes?: number) {
 	const root = await mkdtemp(join(tmpdir(), "pi-background-jobs-"));
@@ -171,7 +186,7 @@ test("job kill terminates the POSIX process group and preserves logs", async (t)
 	const killed = await supervisor.kill(started.id, sessionId);
 	assert.equal(killed.status, "killed");
 	assert.equal(delivered.at(-1)?.status, "killed");
-	assert.throws(() => process.kill(childPid, 0), (error: unknown) => (error as NodeJS.ErrnoException).code === "ESRCH");
+	await assertProcessTerminated(childPid);
 });
 
 test("full shutdown kills jobs and cold restore retains history without relaunching", async (t) => {

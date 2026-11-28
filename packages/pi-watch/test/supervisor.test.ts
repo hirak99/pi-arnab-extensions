@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldToEventLoop, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 import { WatchRegistry } from "../src/registry.ts";
@@ -327,6 +327,44 @@ test("poll scheduling continues after an exit-state save failure", async (t) => 
 		const runs = await readFile(marker, "utf8").catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? "" : Promise.reject(error));
 		return runs.trim().split("\n").filter(Boolean).length >= 2;
 	}, "poll after state failure");
+});
+
+test("shutdown waits for finalization and pending writes without timing assumptions", async (t) => {
+	const { supervisor } = await withSupervisor(t);
+	const registry = (supervisor as any).registry;
+	const recordExit = (supervisor as any).recordExit.bind(supervisor);
+	let finalizationStarted!: () => void;
+	const started = new Promise<void>((resolve) => { finalizationStarted = resolve; });
+	let releaseFinalization!: () => void;
+	const gate = new Promise<void>((resolve) => { releaseFinalization = resolve; });
+	(supervisor as any).recordExit = async (...args: any[]) => {
+		finalizationStarted();
+		await gate;
+		await recordExit(...args);
+	};
+	await supervisor.create({
+		name: "quiescent-shutdown",
+		mode: "poll",
+		run: "exit 0",
+		everySeconds: 3600,
+		sessionId: SESSION,
+	});
+	await started;
+	let settled = false;
+	const shutdown = supervisor.shutdown().then(() => { settled = true; });
+	await yieldToEventLoop();
+	assert.equal(settled, false, "shutdown must wait for the gated finalizer");
+	releaseFinalization();
+	await shutdown;
+	assert.equal(settled, true);
+
+	let lateWrites = 0;
+	const appendLog = registry.appendLog.bind(registry);
+	const saveState = registry.saveState.bind(registry);
+	registry.appendLog = async (...args: any[]) => { lateWrites++; return appendLog(...args); };
+	registry.saveState = async (...args: any[]) => { lateWrites++; return saveState(...args); };
+	await yieldToEventLoop();
+	assert.equal(lateWrites, 0, "no asynchronous write may outlive shutdown");
 });
 
 test("poll notification buffers stay bounded under high output volume", async (t) => {

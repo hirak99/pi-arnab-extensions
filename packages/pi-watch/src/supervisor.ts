@@ -34,6 +34,12 @@ interface WatchEntry {
 	lineReaders: Interface[];
 	outputDrains: Promise<void>[];
 	pendingOutput: Set<Promise<void>>;
+	runCompletion: Promise<void> | null;
+	completeRun: (() => void) | null;
+	runActive: boolean;
+	finalizing: boolean;
+	pendingState: Set<Promise<void>>;
+	pendingFlushes: Set<Promise<void>>;
 	intentionalStop: boolean;
 	timedOut: boolean;
 	stdoutBuf: string;
@@ -251,8 +257,12 @@ export class WatchSupervisor {
 	}
 
 	async remove(name: string, sessionId: string): Promise<void> {
+		await this.removeNamed(name, sessionId, false);
+	}
+
+	private async removeNamed(name: string, sessionId: string, finalizerOwned: boolean): Promise<void> {
 		const entry = this.byName(name, sessionId);
-		await this.stopEntry(entry, "stopped");
+		await this.stopEntry(entry, "stopped", false, !finalizerOwned);
 		this.entries.delete(entry.definition.id);
 		this.onStateChange?.();
 		await this.registry.remove(entry.definition.id);
@@ -302,6 +312,12 @@ export class WatchSupervisor {
 			lineReaders: [],
 			outputDrains: [],
 			pendingOutput: new Set(),
+			runCompletion: null,
+			completeRun: null,
+			runActive: false,
+			finalizing: false,
+			pendingState: new Set(),
+			pendingFlushes: new Set(),
 			intentionalStop: false,
 			timedOut: false,
 			stdoutBuf: "",
@@ -340,7 +356,7 @@ export class WatchSupervisor {
 		});
 		child.on("close", (code, signal) => {
 			clearTimeout(timeout);
-			void this.pollFinished(entry, child, code, signal).catch((error: Error) => this.logStatus(entry, `error: ${error.message}`));
+			this.trackFinalization(entry, () => this.pollFinished(entry, child, code, signal));
 		});
 	}
 
@@ -410,7 +426,7 @@ export class WatchSupervisor {
 			if (!matcher || matcher.test(line)) void this.event(entry, line);
 		});
 		child.on("close", (code, signal) => {
-			void this.streamFinished(entry, child, code, signal).catch((error: Error) => this.logStatus(entry, `error: ${error.message}`));
+			this.trackFinalization(entry, () => this.streamFinished(entry, child, code, signal));
 		});
 		if (wasBroken) {
 			entry.streamAttempt = 0;
@@ -479,11 +495,26 @@ export class WatchSupervisor {
 			},
 		});
 		entry.child = child;
+		entry.runActive = true;
+		entry.runCompletion = new Promise<void>((resolve) => { entry.completeRun = resolve; });
 		entry.state.pid = child.pid ?? null;
 		entry.state.exit_code = null;
 		entry.state.exit_signal = null;
 		void this.persistState(entry);
 		return child;
+	}
+
+	private trackFinalization(entry: WatchEntry, finalize: () => Promise<void>): void {
+		if (!entry.runActive) return;
+		entry.finalizing = true;
+		const pending = finalize().catch((error: Error) => this.logStatus(entry, `error: ${error.message}`));
+		void pending.finally(() => {
+			entry.finalizing = false;
+			entry.runActive = false;
+			entry.completeRun?.();
+			entry.completeRun = null;
+			entry.runCompletion = null;
+		});
 	}
 
 	private attachLineReaders(
@@ -511,15 +542,20 @@ export class WatchSupervisor {
 		}
 	}
 
-	private async persistState(entry: WatchEntry): Promise<void> {
-		try {
-			await this.registry.saveState(entry.definition.id, entry.state);
-		} catch (error) {
-			await this.registry.appendLog(
-				entry.definition.id,
-				`[status]: state save error: ${(error as Error).message}`,
-			).catch(() => undefined);
-		}
+	private persistState(entry: WatchEntry): Promise<void> {
+		const pending = (async () => {
+			try {
+				await this.registry.saveState(entry.definition.id, entry.state);
+			} catch (error) {
+				await this.registry.appendLog(
+					entry.definition.id,
+					`[status]: state save error: ${(error as Error).message}`,
+				).catch(() => undefined);
+			}
+		})();
+		entry.pendingState.add(pending);
+		void pending.finally(() => { entry.pendingState.delete(pending); });
+		return pending;
 	}
 
 	private async recordExit(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
@@ -534,9 +570,10 @@ export class WatchSupervisor {
 		await this.persistState(entry);
 	}
 
-	private async stopEntry(entry: WatchEntry, status: WatchRuntimeState["status"], preserveNextRun = false): Promise<void> {
+	private async stopEntry(entry: WatchEntry, status: WatchRuntimeState["status"], preserveNextRun = false, waitForRun = true): Promise<void> {
 		entry.intentionalStop = true;
 		const nextRunAt = preserveNextRun ? entry.state.next_run_at : null;
+		const runCompletion = entry.runCompletion;
 		if (entry.timer) clearTimeout(entry.timer);
 		if (entry.flushTimer) clearTimeout(entry.flushTimer);
 		entry.timer = null;
@@ -551,7 +588,21 @@ export class WatchSupervisor {
 		entry.state.next_run_at = nextRunAt;
 		await Promise.all(entry.outputDrains);
 		await Promise.all([...entry.pendingOutput]);
+		if (waitForRun && entry.runActive && !entry.finalizing) {
+			// The close event has not started finalization. Readers are drained,
+			// so invalidate it rather than waiting on inherited pipe lifetimes.
+			entry.runActive = false;
+			entry.completeRun?.();
+			entry.completeRun = null;
+			entry.runCompletion = null;
+		}
+		if (waitForRun && runCompletion) await runCompletion;
+		while (entry.pendingFlushes.size > 0) await Promise.all([...entry.pendingFlushes]);
 		await this.flushPending(entry);
+		while (entry.pendingState.size > 0) await Promise.all([...entry.pendingState]);
+		entry.state.status = status;
+		entry.state.pid = null;
+		entry.state.next_run_at = preserveNextRun ? entry.state.next_run_at ?? nextRunAt : null;
 		await this.registry.saveState(entry.definition.id, entry.state);
 		this.onStateChange?.();
 		await this.registry.appendLog(
@@ -604,7 +655,7 @@ export class WatchSupervisor {
 			// concurrently exiting stream cannot emit an extra on_finish notice.
 			entry.intentionalStop = true;
 			await this.flushPending(entry, true);
-			await this.remove(entry.definition.name, entry.definition.session_id);
+			await this.removeNamed(entry.definition.name, entry.definition.session_id, entry.finalizing);
 			return;
 		}
 		if (entry.flushTimer) return;
@@ -614,8 +665,14 @@ export class WatchSupervisor {
 			: this.eventRateFloorMs - sinceLast;
 		entry.flushTimer = setTimeout(() => {
 			entry.flushTimer = null;
-			void this.flushPending(entry);
+			this.trackFlush(entry);
 		}, wait);
+	}
+
+	private trackFlush(entry: WatchEntry): void {
+		const pending = this.flushPending(entry).catch((error: Error) => this.logStatus(entry, `error: ${error.message}`));
+		entry.pendingFlushes.add(pending);
+		void pending.finally(() => { entry.pendingFlushes.delete(pending); });
 	}
 
 	private async flushPending(entry: WatchEntry, cappedFinal = false): Promise<void> {
@@ -654,7 +711,7 @@ export class WatchSupervisor {
 		}
 	}
 
-	private logStatus(entry: WatchEntry, text: string): void {
-		void this.registry.appendLog(entry.definition.id, `[status]: ${text}`).catch(() => undefined);
+	private async logStatus(entry: WatchEntry, text: string): Promise<void> {
+		await this.registry.appendLog(entry.definition.id, `[status]: ${text}`).catch(() => undefined);
 	}
 }
