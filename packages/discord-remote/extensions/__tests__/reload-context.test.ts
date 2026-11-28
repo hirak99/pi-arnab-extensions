@@ -97,6 +97,7 @@ function createHarness(extension: typeof registerExtension = registerExtension) 
   return {
     pi,
     commandName: () => commandName,
+    hasHandler: (name: string) => handlers.has(name),
     async start(ctx: any) {
       if (!commandHandler) throw new Error("Command was not registered");
       await commandHandler("start", ctx);
@@ -138,6 +139,12 @@ describe("Discord client reload handoff", () => {
     expect(harness.commandName()).toBe("discord");
     expect(harness.pi.registerCommand).toHaveBeenCalledOnce();
     expect(harness.pi.registerCommand).not.toHaveBeenCalledWith("pi-discord-remote", expect.anything());
+  });
+
+  it("registers only the image tool without intercepting question tools", () => {
+    const harness = createHarness();
+    expect(harness.pi.registerTool.mock.calls.map(([spec]) => spec.name)).toEqual(["discord_send_image"]);
+    expect(harness.hasHandler("tool_call")).toBe(false);
   });
 
   it.each(["new", "resume", "startup"])("auto-starts a %s session when the project opts in", async (reason) => {
