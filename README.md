@@ -4,7 +4,7 @@ A local-first monorepo for Pi extensions managed by Arnab and the DevOps
 Agent. Some packages are original projects; others are heavily modified forks.
 Each package retains its own authorship, attribution, and license.
 
-## Packages
+## Extensions
 
 | Package | Directory | Origin and license |
 | --- | --- | --- |
@@ -12,8 +12,6 @@ Each package retains its own authorship, attribution, and license.
 | Agentic Team | `packages/agentic-team` | Original project; Apache-2.0 |
 | Watch | `packages/pi-watch` | Original project; Apache-2.0 |
 | Background Jobs | `packages/pi-background-jobs` | Original project; Apache-2.0 |
-| Durable Inbox | `packages/durable-inbox` | Original project; Apache-2.0 (library package, not a Pi extension) |
-| Output Store | `packages/pi-output-store` | Original project; Apache-2.0 (library package, not a Pi extension) |
 
 ## Licensing
 
