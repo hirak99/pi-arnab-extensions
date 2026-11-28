@@ -13,7 +13,7 @@ const discord = vi.hoisted(() => {
     sendTyping: vi.fn(async () => {}),
     delete: vi.fn(async () => {}),
   };
-  return { channel, instances: [] as any[], sent: [] as string[] };
+  return { channel, instances: [] as any[], sent: [] as string[], loginGate: null as Promise<void> | null };
 });
 
 vi.mock("discord.js", async () => {
@@ -28,6 +28,7 @@ vi.mock("discord.js", async () => {
       })),
     };
     login = vi.fn(async () => {
+      if (discord.loginGate) await discord.loginGate;
       this.emit("ready", this);
       return "token";
     });
@@ -138,6 +139,8 @@ let sharedEventBus: ReturnType<typeof createEventBus>;
 beforeEach(() => {
   sharedEventBus = createEventBus();
   discord.sent.length = 0;
+  discord.instances.length = 0;
+  discord.loginGate = null;
 });
 
 afterEach(() => {
@@ -383,6 +386,87 @@ describe("Discord client reload handoff", () => {
     ]));
     expect(discord.channel.send).toHaveBeenCalledTimes(2);
     await second.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("cancels pre-login configuration continuation when reload has no client to bridge", async () => {
+    let resolveConfig!: (cfg: any) => void;
+    vi.mocked(loadEffectiveConfig).mockReturnValueOnce(new Promise((resolve) => { resolveConfig = resolve; }));
+    const first = createHarness();
+    const starting = first.start(makeAutoStartContext());
+    await vi.waitFor(() => expect(loadEffectiveConfig).toHaveBeenCalled());
+    await first.emit("session_shutdown", { reason: "reload" });
+    resolveConfig({ token: "test-token", guildId: "guild-1", echo: false });
+    await starting;
+    expect(discord.instances).toHaveLength(0);
+  });
+
+  it("finishes in-flight login and channel initialization before reload handoff", async () => {
+    let releaseReady!: () => void;
+    discord.loginGate = new Promise<void>((resolve) => { releaseReady = resolve; });
+    const first = createHarness();
+    const starting = first.start(makeAutoStartContext());
+    await vi.waitFor(() => expect(discord.instances).toHaveLength(1));
+    const initialClient = discord.instances[0];
+
+    let shutdownSettled = false;
+    const shutdown = first.emit("session_shutdown", { reason: "reload" }).finally(() => {
+      shutdownSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shutdownSettled).toBe(false);
+    expect(initialClient.destroy).not.toHaveBeenCalled();
+
+    releaseReady();
+    await starting;
+    await shutdown;
+    discord.loginGate = null;
+    const reloadSpecifier = "../index.js?reload-inflight-initialization";
+    const freshExtension = (await import(reloadSpecifier)).default;
+    const second = createHarness(freshExtension);
+    const ctx = makeAutoStartContext();
+    await second.emit("session_start", { reason: "reload" }, ctx);
+    expect(discord.instances).toHaveLength(1);
+    expect(initialClient.destroy).not.toHaveBeenCalled();
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("pi-discord-remote", expect.stringContaining("#test-project"));
+    await second.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("resumes reconnect attempts at their remaining backoff across reload", async () => {
+    vi.useFakeTimers();
+    const first = createHarness();
+    const firstCtx = makeAutoStartContext();
+    await first.start(firstCtx);
+    const initialClient = discord.instances[0];
+    initialClient.isReady.mockReturnValue(false);
+    initialClient.emit("shardDisconnect", {});
+    await vi.waitFor(() => {
+      expect(first.pi.events).toBe(sharedEventBus);
+      expect(discord.instances).toHaveLength(1);
+    });
+    await vi.waitFor(() => expect(firstCtx.ui.setStatus).toHaveBeenCalledWith(
+      "pi-discord-remote",
+      expect.stringContaining("reconnecting (1/10)"),
+    ));
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(discord.instances).toHaveLength(1);
+
+    await first.emit("session_shutdown", { reason: "reload" });
+    const reloadSpecifier = "../index.js?reload-reconnect-backoff";
+    const freshExtension = (await import(reloadSpecifier)).default;
+    const second = createHarness(freshExtension);
+    const secondCtx = makeAutoStartContext();
+    await second.emit("session_start", { reason: "reload" }, secondCtx);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.waitFor(() => expect(discord.instances).toHaveLength(2));
+    const replacement = discord.instances[1];
+    expect(replacement.login).toHaveBeenCalledOnce();
+    expect(replacement.isReady()).toBe(true);
+    await vi.waitFor(() => expect(secondCtx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Discord reconnected"),
+      "success",
+    ));
+    await second.emit("session_shutdown", { reason: "quit" });
+    vi.useRealTimers();
   });
 
   it("preserves reported activity and terminal dedupe across reload", async () => {

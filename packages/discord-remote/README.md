@@ -47,6 +47,10 @@ Running subagent/job/watch snapshots, `(New)` markers, terminal dedupe IDs, and
 queued activity text are also retained. Report sends use a rebound FIFO rather
 than carrying stale Promise chains, and job/watch status is refreshed on
 adoption without posting an unsolicited snapshot.
+Reload waits for an in-flight login/channel setup or reconnect attempt to settle
+before handoff. Reconnect attempt counts, terminal failure state, and remaining
+backoff are retained, while pending background/job/watch status requests are
+settled so no old-runtime waiter is left behind.
 
 Fork-only config keys used below: `displayNames`, `echo`, `steer`,
 `autoStart`, `staticChannel`, `channelName`. For day-to-day operations — reconnecting after a reboot,
