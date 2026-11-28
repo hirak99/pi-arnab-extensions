@@ -32,6 +32,8 @@ interface WatchEntry {
 	timer: NodeJS.Timeout | null;
 	flushTimer: NodeJS.Timeout | null;
 	lineReaders: Interface[];
+	outputDrains: Promise<void>[];
+	pendingOutput: Set<Promise<void>>;
 	intentionalStop: boolean;
 	timedOut: boolean;
 	stdoutBuf: string;
@@ -253,6 +255,11 @@ export class WatchSupervisor {
 		await this.registry.remove(entry.definition.id);
 	}
 
+	async tailDetails(name: string, sessionId: string, maxLines: number) {
+		const entry = this.byName(name, sessionId);
+		return this.registry.readLog(entry.definition.id, maxLines);
+	}
+
 	async tail(name: string, sessionId: string, maxLines: number): Promise<string[]> {
 		const entry = this.byName(name, sessionId);
 		return this.registry.readLogTail(entry.definition.id, maxLines);
@@ -266,6 +273,7 @@ export class WatchSupervisor {
 		for (const entry of this.entries.values()) {
 			await this.stopEntry(entry, entry.state.status, true);
 		}
+		await this.registry.closeLogs();
 	}
 
 	private byName(name: string, sessionId: string): WatchEntry {
@@ -283,6 +291,8 @@ export class WatchSupervisor {
 			timer: null,
 			flushTimer: null,
 			lineReaders: [],
+			outputDrains: [],
+			pendingOutput: new Set(),
 			intentionalStop: false,
 			timedOut: false,
 			stdoutBuf: "",
@@ -317,7 +327,7 @@ export class WatchSupervisor {
 			if (stream === "stdout") entry.stdoutBuf += `${line}\n`;
 			else entry.stderrBuf += `${line}\n`;
 		});
-		child.on("exit", (code, signal) => {
+		child.on("close", (code, signal) => {
 			clearTimeout(timeout);
 			void this.pollFinished(entry, child, code, signal).catch((error: Error) => this.logStatus(entry, `error: ${error.message}`));
 		});
@@ -325,10 +335,13 @@ export class WatchSupervisor {
 
 	private async pollFinished(entry: WatchEntry, child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
 		if (entry.child !== child) return;
+		await Promise.all(entry.outputDrains);
+		await Promise.all([...entry.pendingOutput]);
+		if (entry.child !== child) return;
 		entry.child = null;
 		entry.lineReaders.forEach((reader) => reader.close());
 		entry.lineReaders = [];
-		this.recordExit(entry, code, signal);
+		await this.recordExit(entry, code, signal);
 		const definition = entry.definition;
 		if (!entry.intentionalStop && entry.state.status === "running") {
 			if (entry.timedOut) {
@@ -344,6 +357,7 @@ export class WatchSupervisor {
 		}
 		entry.intentionalStop = false;
 		if (entry.state.status === "running") this.schedulePoll(entry);
+		await this.registry.closeLog(entry.definition.id);
 	}
 
 	private schedulePoll(entry: WatchEntry): void {
@@ -369,7 +383,7 @@ export class WatchSupervisor {
 			if (line.trim() === "") return;
 			if (!matcher || matcher.test(line)) void this.event(entry, line);
 		});
-		child.on("exit", (code, signal) => {
+		child.on("close", (code, signal) => {
 			void this.streamFinished(entry, child, code, signal).catch((error: Error) => this.logStatus(entry, `error: ${error.message}`));
 		});
 		if (wasBroken) {
@@ -384,13 +398,17 @@ export class WatchSupervisor {
 
 	private async streamFinished(entry: WatchEntry, child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
 		if (entry.child !== child) return;
+		await Promise.all(entry.outputDrains);
+		await Promise.all([...entry.pendingOutput]);
+		if (entry.child !== child) return;
 		entry.child = null;
 		entry.lineReaders.forEach((reader) => reader.close());
 		entry.lineReaders = [];
-		this.recordExit(entry, code, signal);
+		await this.recordExit(entry, code, signal);
 		const definition = entry.definition;
 		if (entry.intentionalStop || entry.state.status !== "running") {
 			entry.intentionalStop = false;
+			await this.registry.closeLog(entry.definition.id);
 			return;
 		}
 		if (code === 0) {
@@ -403,6 +421,7 @@ export class WatchSupervisor {
 			if (definition.on_finish) {
 				await this.deliverSafely(entry, finishedBody(definition, await this.registry.readLogTail(definition.id, 10)));
 			}
+			await this.registry.closeLog(definition.id);
 			return;
 		}
 		await this.broke(entry, code, signal, entry.timedOut ? "watchdog timeout" : undefined);
@@ -415,6 +434,7 @@ export class WatchSupervisor {
 			entry.state.next_run_at = null;
 			void this.streamStart(entry);
 		}, backoffMs);
+		await this.registry.closeLog(definition.id);
 	}
 
 	// -------------------------------------------------------------- shared --
@@ -443,27 +463,36 @@ export class WatchSupervisor {
 		child: ChildProcess,
 		onLine: (line: string, stream: "stdout" | "stderr") => void,
 	): void {
+		entry.outputDrains = [];
 		for (const [stream, readable] of [["stdout", child.stdout], ["stderr", child.stderr]] as const) {
 			if (!readable) continue;
 			const reader = createInterface({ input: readable });
+			entry.outputDrains.push(new Promise<void>((resolve) => reader.once("close", resolve)));
 			reader.on("line", (line) => {
-				void this.registry.appendLog(entry.definition.id, `[${stream}]: ${line}`).catch(() => undefined);
-				onLine(line, stream);
+				reader.pause();
+				const pending = this.registry.appendLog(entry.definition.id, `[${stream}]: ${line}`)
+					.catch(() => undefined)
+					.then(() => { onLine(line, stream); })
+					.finally(() => {
+						entry.pendingOutput.delete(pending);
+						reader.resume();
+					});
+				entry.pendingOutput.add(pending);
 			});
 			entry.lineReaders.push(reader);
 		}
 	}
 
-	private recordExit(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null): void {
+	private async recordExit(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
 		entry.state.pid = null;
 		entry.state.exit_code = code;
 		entry.state.exit_signal = signal;
 		if (code !== null || signal) {
-			void this.registry
+			await this.registry
 				.appendLog(entry.definition.id, `[status]: script exited with ${signal ? `signal ${signal}` : `code ${code}`}`)
 				.catch(() => undefined);
 		}
-		void this.registry.saveState(entry.definition.id, entry.state);
+		await this.registry.saveState(entry.definition.id, entry.state);
 	}
 
 	private async stopEntry(entry: WatchEntry, status: WatchRuntimeState["status"], preserveNextRun = false): Promise<void> {
@@ -481,6 +510,8 @@ export class WatchSupervisor {
 		entry.state.status = status;
 		entry.state.pid = null;
 		entry.state.next_run_at = nextRunAt;
+		await Promise.all(entry.outputDrains);
+		await Promise.all([...entry.pendingOutput]);
 		await this.flushPending(entry);
 		await this.registry.saveState(entry.definition.id, entry.state);
 		this.onStateChange?.();
@@ -490,6 +521,7 @@ export class WatchSupervisor {
 				? "[status]: stopped for session shutdown; exact-session auto-resume armed"
 				: `[status]: watch ${status}`,
 		).catch(() => undefined);
+		await this.registry.closeLog(entry.definition.id);
 	}
 
 	private async broke(entry: WatchEntry, code: number | null, signal: NodeJS.Signals | null, reason: string | undefined): Promise<void> {
@@ -500,7 +532,7 @@ export class WatchSupervisor {
 		if (!first) return;
 		const tail = await this.registry.readLogTail(entry.definition.id, 10);
 		const body = reason
-			? `Watch "${entry.definition.name}": script broke (${reason}).\nUse watch_tail with name "${entry.definition.name}" for the full output.`
+			? `Watch "${entry.definition.name}": script broke (${reason}).\nUse watch_tail with name "${entry.definition.name}" for recent retained output.`
 			: brokeBody(entry.definition, code, signal, tail);
 		await this.deliverSafely(entry, body);
 	}
@@ -534,7 +566,6 @@ export class WatchSupervisor {
 			entry.intentionalStop = true;
 			await this.flushPending(entry, true);
 			await this.remove(entry.definition.name, entry.definition.session_id);
-			await this.registry.appendLog(entry.definition.id, `[status]: max_events=${maxEvents} reached; watch removed`);
 			return;
 		}
 		if (entry.flushTimer) return;

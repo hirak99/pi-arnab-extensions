@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,9 +16,9 @@ interface Fixture {
 	root: string;
 }
 
-async function withSupervisor(t: test.TestContext, options: ConstructorParameters<typeof WatchSupervisor>[2] = {}): Promise<Fixture> {
+async function withSupervisor(t: test.TestContext, options: ConstructorParameters<typeof WatchSupervisor>[2] = {}, maxSegmentBytes?: number): Promise<Fixture> {
 	const root = await mkdtemp(join(tmpdir(), "pi-watch-test-"));
-	const registry = new WatchRegistry(root);
+	const registry = new WatchRegistry(root, join(root, "logs"), maxSegmentBytes);
 	const events: string[] = [];
 	const supervisor = new WatchSupervisor(registry, async (_watch, body) => {
 		events.push(body);
@@ -39,6 +39,20 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, what: string
 }
 
 const SESSION = "session-test-1";
+
+test("legacy watch logs remain readable and are removed with the watch", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-watch-legacy-log-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new WatchRegistry(root, join(root, "temporary-logs"));
+	await mkdir(join(root, "logs"), { recursive: true });
+	await writeFile(join(root, "logs", "legacy.log"), "old output\n", { mode: 0o600 });
+	assert.deepEqual((await registry.readLog("legacy", 10)).lines, ["old output"]);
+	await registry.appendLog("legacy", "new output");
+	assert.deepEqual((await registry.readLog("legacy", 10)).lines, ["new output"]);
+	await registry.remove("legacy");
+	await assert.rejects(() => stat(join(root, "logs", "legacy.log")), { code: "ENOENT" });
+	await assert.rejects(() => stat(registry.logPath("legacy")), { code: "ENOENT" });
+});
 
 test("poll: exit 1 with output delivers one notification; exit 0 stays silent", async (t) => {
 	const { supervisor, events } = await withSupervisor(t);
@@ -167,7 +181,10 @@ test("poll: max_events=1 delivers one alert and automatically removes the watch"
 	await waitFor(() => events.length >= 1, "one-shot poll event");
 	await waitFor(() => supervisor.getById(definition.id) === undefined, "automatic removal");
 	const registry = new WatchRegistry(root);
-	await waitFor(async () => (await registry.readLogTail(definition.id, 50)).some((line) => line.includes("watch removed")), "removal log");
+	assert.deepEqual(await registry.readLogTail(definition.id, 50), [], "capped removal deletes retained output");
+	for (const path of [registry.logPath(definition.id), `${registry.logPath(definition.id)}.1`, `${registry.logPath(definition.id)}.state.json`]) {
+		await assert.rejects(() => stat(path), { code: "ENOENT" });
+	}
 	await delay(1200);
 	assert.equal(events.length, 1);
 	assert.match(events[0]!, /only-once/);
@@ -232,11 +249,32 @@ test("stream: max_events counts source events and flushes a coalesced final batc
 	assert.doesNotMatch(events[0]!, /event 4|watch_tail/);
 });
 
+test("watch output rotates without stopping and removal deletes every segment", async (t) => {
+	const { supervisor, root } = await withSupervisor(t, {}, 16);
+	const definition = await supervisor.create({
+		name: "bounded-output",
+		mode: "stream",
+		run: "for i in $(seq 1 20); do echo $i; done",
+		sessionId: SESSION,
+	});
+	await waitFor(() => supervisor.get("bounded-output", SESSION).state.status === "stopped", "bounded stream completion");
+	const registry = new WatchRegistry(root);
+	assert.ok((await stat(registry.logPath(definition.id))).size <= 16);
+	assert.ok((await stat(`${registry.logPath(definition.id)}.1`)).size <= 16);
+	const result = await supervisor.tailDetails("bounded-output", SESSION, 100);
+	assert.ok(result.omittedLines > 0);
+	assert.equal(result.lines.some((line) => line === "[stdout]: 1"), false);
+	await supervisor.remove("bounded-output", SESSION);
+	for (const path of [registry.logPath(definition.id), `${registry.logPath(definition.id)}.1`, `${registry.logPath(definition.id)}.state.json`]) {
+		await assert.rejects(() => stat(path), { code: "ENOENT" });
+	}
+});
+
 test("watch lifecycle: pause stops events, resume restarts, remove deletes definition", async (t) => {
 	const { supervisor, events, root } = await withSupervisor(t);
 	const marker = join(await mkdtemp(join(tmpdir(), "pi-watch-marker-")), "count");
 	const shell = (exit: string) => `n=$(cat ${marker} 2>/dev/null || echo 0); echo $((n+1)) > ${marker}; echo "seen $n"; exit ${exit}`;
-	await supervisor.create({ name: "life", mode: "poll", run: shell("1"), everySeconds: 1, sessionId: SESSION });
+	const definition = await supervisor.create({ name: "life", mode: "poll", run: shell("1"), everySeconds: 1, sessionId: SESSION });
 	await waitFor(() => events.length >= 1, "first event");
 	await supervisor.pause("life", SESSION);
 	const pausedAt = events.length;
@@ -250,6 +288,7 @@ test("watch lifecycle: pause stops events, resume restarts, remove deletes defin
 	assert.throws(() => supervisor.get("life", SESSION), WatchError);
 	const registry = new WatchRegistry(root);
 	assert.deepEqual(await registry.listDefinitions(), []);
+	assert.deepEqual(await registry.readLogTail(definition.id, 50), []);
 });
 
 test("session scope isolates listing and lifecycle operations while allowing reused names", async (t) => {

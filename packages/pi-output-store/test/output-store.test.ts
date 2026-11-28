@@ -36,6 +36,16 @@ test("fixed-path rotation bounds segments and counts physically omitted lines", 
 	await assert.rejects(stat(`${path}.state.json`), { code: "ENOENT" });
 });
 
+test("exact-boundary rotation recreates the fixed current path", async (t) => {
+	const path = await fixture(t);
+	const output = new BoundedOutput(path, { maxSegmentBytes: 8 });
+	await output.append("123456789");
+	await output.close();
+	assert.equal((await stat(path)).size, 1);
+	assert.equal((await stat(`${path}.1`)).size, 8);
+	assert.equal((await readOutput(path)).text, "123456789");
+});
+
 test("large chunks are split without exceeding the segment byte bound", async (t) => {
 	const path = await fixture(t);
 	const output = new BoundedOutput(path, { maxSegmentBytes: 5 });

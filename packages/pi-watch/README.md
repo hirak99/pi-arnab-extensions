@@ -30,10 +30,11 @@ rather than receiving a redundant definition echo.
 - `watch_list`, `watch_inspect`, `watch_pause`, `watch_resume`, `watch_remove`
   operate only on watches owned by the current Pi session. Watch names must be
   unique within a session; different sessions may reuse the same name.
-- `watch_tail(name, lines=50)` — the full captured output with
+- `watch_tail(name, lines=50)` — recent retained output with
   `[stdout]:` / `[stderr]:` prefixes and a synthesized `[status]:` trailer
   ("script is still running", "script exited with code N", "watch is paused",
-  restart scheduling).
+  restart scheduling). If rotation discarded older output, the result also
+  reports `omitted_lines`.
 
 Semantics:
 
@@ -43,9 +44,9 @@ Semantics:
 - `max_events` is an optional lifetime cap on source alert events: exit-1 poll
   alerts or matching stream stdout lines, not coalesced deliveries. Reaching it
   flushes the final notification batch and automatically removes the watch
-  without an extra `on_finish` notice. Logs and script state remain on disk for
-  forensics. Pause/resume does not reset the budget; create a new watch after
-  automatic removal to re-arm.
+  without an extra `on_finish` notice. Temporary output is deleted with the
+  watch; script state remains on disk for forensics. Pause/resume does not reset
+  the budget; create a new watch after automatic removal to re-arm.
 - Notifications are visible custom Pi messages with a compact `[watch]`
   renderer. Active runs are steered immediately; Pi starts a new run when the
   session is idle. Delivery never enters the user-input path or modifies an
@@ -53,7 +54,8 @@ Semantics:
 - Deliveries are rate-limited (15s floor per watch plus a short grace window
   so bursts coalesce); a rate-limited notification shows the last 3 event
   lines and a "N notifications before this not shown; use watch_tail"
-  trailer. The full stream is always in the log.
+  trailer. Recent output remains available through `watch_tail`; older output
+  may be omitted by bounded rotation.
 - Scripts get a private state directory in `$WATCH_STATE` (plus `WATCH_ID`,
   `WATCH_NAME`, `WATCH_MODE`). Watch commands must be idempotent; keep cursors
   in `$WATCH_STATE` so restarts do not re-notify old events. Full restart
@@ -79,6 +81,28 @@ Semantics:
 
 Docs and usage examples (periodic wakeup, file-change notifier, GitHub issue
 watcher) ship in the tool descriptions and guidelines.
+
+## Output lifecycle
+
+Definitions, runtime state, notification outbox, and `$WATCH_STATE` remain under
+`~/.pi/pi-watch/` (or `PI_WATCH_DIR`). Captured stdout/stderr instead uses
+`${os.tmpdir()}/pi-<username>/pi-watch/`; set `PI_WATCH_LOG_DIR` only when an
+explicit alternate output directory is needed. The per-user root is private
+(`0700`) and output files are `0600`.
+
+Each watch has a fixed `.log` path and at most one `.log.1` rotated segment.
+Segments rotate at 10 MiB without killing or pausing the watch beyond normal
+write backpressure. A small temporary state file tracks cumulative omitted
+lines. `watch_tail` reads across both retained segments and includes
+`omitted_lines` only when physical rotation discarded older output.
+
+Ending, pausing, or breaking a watch does not delete output. `watch_remove` and
+automatic `max_events` removal delete the current segment, rotated segment, and
+accounting file; `$WATCH_STATE` is retained. Existing legacy `.pi/pi-watch/logs`
+files remain readable until new output is written, and are also deleted when
+their watch is removed. Temporary output can disappear during reboot or external
+temporary-directory cleanup, so copy it to an explicit permanent path when
+needed beyond the watch lifecycle.
 
 ## Process durability design
 

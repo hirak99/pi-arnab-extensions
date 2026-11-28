@@ -72,12 +72,16 @@ test("reload preserves the live watch process; full restart auto-resumes it", as
 	const root = await mkdtemp(join(tmpdir(), "pi-watch-reload-"));
 	const marker = join(root, "script-pids");
 	const previousRoot = process.env.PI_WATCH_DIR;
+	const previousLogRoot = process.env.PI_WATCH_LOG_DIR;
 	process.env.PI_WATCH_DIR = root;
+	process.env.PI_WATCH_LOG_DIR = join(root, "logs");
 	const harnesses: Array<ReturnType<typeof createHarness>> = [];
 	t.after(async () => {
 		for (const harness of harnesses) await harness.shutdown("quit").catch(() => undefined);
 		if (previousRoot === undefined) delete process.env.PI_WATCH_DIR;
 		else process.env.PI_WATCH_DIR = previousRoot;
+		if (previousLogRoot === undefined) delete process.env.PI_WATCH_LOG_DIR;
+		else process.env.PI_WATCH_LOG_DIR = previousLogRoot;
 		await rm(root, { recursive: true, force: true });
 	});
 
@@ -139,7 +143,9 @@ test("reload preserves the live watch process; full restart auto-resumes it", as
 test("reload preserves removed-watch sender identity and awaits durable notification receipts", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-watch-reload-identity-"));
 	const previousRoot = process.env.PI_WATCH_DIR;
+	const previousLogRoot = process.env.PI_WATCH_LOG_DIR;
 	process.env.PI_WATCH_DIR = root;
+	process.env.PI_WATCH_LOG_DIR = join(root, "logs");
 	const first = createHarness();
 	let second: ReturnType<typeof createHarness> | undefined;
 	t.after(async () => {
@@ -147,6 +153,8 @@ test("reload preserves removed-watch sender identity and awaits durable notifica
 		await first.shutdown("quit").catch(() => undefined);
 		if (previousRoot === undefined) delete process.env.PI_WATCH_DIR;
 		else process.env.PI_WATCH_DIR = previousRoot;
+		if (previousLogRoot === undefined) delete process.env.PI_WATCH_LOG_DIR;
+		else process.env.PI_WATCH_LOG_DIR = previousLogRoot;
 		await rm(root, { recursive: true, force: true });
 	});
 

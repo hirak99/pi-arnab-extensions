@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace=pi-discord-remote",
-    "check": "npm run check --workspace=pi-durable-inbox && npm run check --workspace=pi-discord-remote && npm run check --workspace=pi-agentic-team && npm run check --workspace=pi-watch && npm run check --workspace=pi-background-jobs"
+    "check": "npm run check --workspace=pi-output-store && npm run check --workspace=pi-durable-inbox && npm run check --workspace=pi-discord-remote && npm run check --workspace=pi-agentic-team && npm run check --workspace=pi-watch && npm run check --workspace=pi-background-jobs"
   },
   "pi": {
     "extensions": [

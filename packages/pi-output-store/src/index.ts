@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, rename, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export const DEFAULT_OUTPUT_SEGMENT_BYTES = 10 * 1024 * 1024;
@@ -56,6 +56,22 @@ async function ensurePrivateDirectory(path: string): Promise<void> {
 		throw new Error(`Temporary output directory has a different owner: ${path}`);
 	}
 	if ((info.mode & 0o777) !== 0o700) await chmod(path, 0o700);
+}
+
+async function ensureOutputParent(directory: string): Promise<void> {
+	const base = temporaryOutputBase();
+	const suffix = relative(base, directory);
+	if (suffix.startsWith("..") || isAbsolute(suffix)) {
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		return;
+	}
+	await ensurePrivateDirectory(base);
+	let current = base;
+	if (!suffix) return;
+	for (const segment of suffix.split(/[\\/]/)) {
+		current = join(current, segment);
+		await ensurePrivateDirectory(current);
+	}
 }
 
 export async function ensureTemporaryOutputRoot(category: string): Promise<string> {
@@ -149,7 +165,7 @@ export class BoundedOutput {
 
 	private async initialize(): Promise<void> {
 		if (this.initialized) return;
-		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+		await ensureOutputParent(dirname(this.path));
 		const previous = await readState(this.path);
 		const [current, rotated] = await Promise.all([countLines(this.path), countLines(rotatedPath(this.path))]);
 		this.currentBytes = current.bytes;
@@ -185,6 +201,8 @@ export class BoundedOutput {
 		this.currentBytes = 0;
 		this.endsWithNewline = true;
 		await writeState(this.path, this.state);
+		// Keep the advertised current path present even at an exact byte boundary.
+		await this.initialize();
 	}
 
 	private async writeChunk(chunk: Buffer): Promise<void> {

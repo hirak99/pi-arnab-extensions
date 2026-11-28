@@ -41,14 +41,14 @@ export function formatCoalesced(watch: WatchDefinition, batch: CoalescedBatch, t
 	const trailer = !tailAvailable
 		? hidden > 0 ? `${hidden} earlier events omitted from this notification.` : undefined
 		: hidden > 0
-			? `${hidden} notifications before this not shown; use watch_tail with name "${watch.name}" for the full list.`
-			: `Use watch_tail with name "${watch.name}" for the full list.`;
+			? `${hidden} notifications before this not shown; use watch_tail with name "${watch.name}" for recent retained output.`
+			: `Use watch_tail with name "${watch.name}" for recent retained output.`;
 	return [header, ...lines, ...(trailer ? [trailer] : [])].join("\n");
 }
 
 export function truncateBody(body: string, maxChars: number, tailAvailable = true): string {
 	if (body.length <= maxChars) return body;
-	const suffix = tailAvailable ? "; use watch_tail for full output" : "";
+	const suffix = tailAvailable ? "; use watch_tail for recent retained output" : "";
 	return `${body.slice(0, maxChars)}\n… (truncated${suffix})`;
 }
 
@@ -60,7 +60,7 @@ export function exitDescription(code: number | null, signal: string | null): str
 
 export function brokeBody(watch: WatchDefinition, code: number | null, signal: string | null, tail: string[]): string {
 	const detail = tail.length > 0 ? `\n\nRecent output:\n${tail.join("\n")}` : "";
-	return `Watch "${watch.name}": script broke (exited with ${exitDescription(code, signal)}).${detail}\nUse watch_tail with name "${watch.name}" for the full output.`;
+	return `Watch "${watch.name}": script broke (exited with ${exitDescription(code, signal)}).${detail}\nUse watch_tail with name "${watch.name}" for recent retained output.`;
 }
 
 export function finishedBody(watch: WatchDefinition, tail: string[]): string {

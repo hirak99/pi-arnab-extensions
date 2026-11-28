@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { InboxDelivery, MessageStore, sendNativeNotification } from "pi-durable-inbox";
+import { temporaryOutputRoot } from "pi-output-store";
 
 import { senderIdentity, statusLine } from "./format.ts";
 import { WatchRegistry } from "./registry.ts";
@@ -99,7 +100,7 @@ const STREAM_EXAMPLE = [
 
 export default function watchExtension(pi: ExtensionAPI) {
 	const root = process.env.PI_WATCH_DIR ?? join(homedir(), ".pi", "pi-watch");
-	const registry = new WatchRegistry(root);
+	const registry = new WatchRegistry(root, process.env.PI_WATCH_LOG_DIR ?? temporaryOutputRoot("pi-watch"));
 	const outbox = new MessageStore(join(root, "outbox"));
 	// Runtime-only sender identities let inbox rendering keep a watch's name
 	// after max_events auto-removal without retaining an active definition.
@@ -252,7 +253,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 			`Runs at most every ${MIN_EVERY_SECONDS} seconds (default ${DEFAULT_EVERY_SECONDS}); a single run is killed after timeout_seconds (default ${DEFAULT_TIMEOUT_SECONDS}). ` +
 			"initial_delay_seconds postpones the very first run (default 0 = run immediately, which establishes the change-detection baseline). " +
 			"Every fired notification ends with a stats footer: its sequence number and the time since the previous event. " +
-			"max_events is an optional lifetime cap on alert events; reaching it delivers the final batch and removes the watch (logs and script state remain on disk). " +
+			"max_events is an optional lifetime cap on alert events; reaching it delivers the final batch, deletes temporary output, and removes the watch (script state remains on disk). " +
 			`Scripts get a private state directory in $WATCH_STATE (cursor files survive restarts). ${DECISION_RULE}\n${POLL_EXAMPLE}`,
 		promptSnippet: "Create a durable poll watch: re-runs a check command, notifies when its exit code is non-zero",
 		promptGuidelines: [
@@ -423,8 +424,8 @@ export default function watchExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "watch_remove",
 		label: "Remove watch",
-		description: "Permanently remove a watch: stop its script and delete its definition. Logs and script state are kept for forensics.",
-		promptSnippet: "Permanently remove a durable watch while retaining logs and script state",
+		description: "Permanently remove a watch: stop its script, delete its definition, and delete all temporary output segments. Script state is kept for forensics.",
+		promptSnippet: "Permanently remove a watch and its temporary output while retaining script state",
 		executionMode: "sequential",
 		parameters: Type.Object({
 			name: Type.String({ description: "Watch name" }),
@@ -444,19 +445,23 @@ export default function watchExtension(pi: ExtensionAPI) {
 		name: "watch_tail",
 		label: "Read watch output",
 		description:
-			"Read the tail of a watch's captured output. Lines are prefixed [stdout]: or [stderr]:; a final synthesized [status]: line reports live state " +
-			"(\"script is still running\", \"script exited with code N\", \"watch is paused\", or restart scheduling). This is the full record of everything the script printed, including events suppressed by the notification rate limit.",
+			"Read recent retained output from a watch's private temporary log. Lines are prefixed [stdout]: or [stderr]:; a final synthesized [status]: line reports live state " +
+			"(\"script is still running\", \"script exited with code N\", \"watch is paused\", or restart scheduling). Output uses two-segment byte rotation; omitted_lines is returned only when older lines were physically discarded.",
 		promptSnippet: "Read a watch's captured stdout/stderr tail and its live status",
 		parameters: Type.Object({
 			name: Type.String({ description: "Watch name" }),
 			lines: Type.Optional(Type.Number({ description: "Number of log lines to read; default 50" })),
 		}),
 		async execute(_toolCallId, params) {
-		guardConflicts();
+			guardConflicts();
 			try {
 				const { state } = supervisor.get(params.name, owningSessionId());
-				const logLines = await supervisor.tail(params.name, owningSessionId(), params.lines ?? 50);
-				return toolResult({ lines: logLines, status: statusLine(state) });
+				const result = await supervisor.tailDetails(params.name, owningSessionId(), params.lines ?? 50);
+				return toolResult({
+					lines: result.lines,
+					status: statusLine(state),
+					...(result.omittedLines > 0 ? { omitted_lines: result.omittedLines } : {}),
+				});
 			} catch (error) {
 				toWatchError(error);
 			}

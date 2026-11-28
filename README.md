@@ -13,12 +13,13 @@ Each package retains its own authorship, attribution, and license.
 | Watch | `packages/pi-watch` | Original project; Apache-2.0 |
 | Background Jobs | `packages/pi-background-jobs` | Original project; Apache-2.0 |
 | Durable Inbox | `packages/durable-inbox` | Original project; Apache-2.0 (library package, not a Pi extension) |
+| Output Store | `packages/pi-output-store` | Original project; Apache-2.0 (library package, not a Pi extension) |
 
 ## Licensing
 
 Apache-2.0 is the default license for original monorepo content. A package's
 own `LICENSE` takes precedence. Discord Remote remains MIT. Agentic Team,
-Watch, Background Jobs, and Durable Inbox are original projects and each keeps an identical
+Watch, Background Jobs, Durable Inbox, and Output Store are original projects and each keeps an identical
 Apache-2.0 license copy for standalone package distribution.
 
 The original repositories remain unchanged. This monorepo's own upstream is

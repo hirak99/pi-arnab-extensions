@@ -19,7 +19,8 @@
     ]
   },
   "dependencies": {
-    "pi-durable-inbox": "*"
+    "pi-durable-inbox": "*",
+    "pi-output-store": "*"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

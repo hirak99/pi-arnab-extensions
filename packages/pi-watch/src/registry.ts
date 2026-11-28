@@ -2,6 +2,8 @@ import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/pro
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
+import { BoundedOutput, deleteOutput, readOutputLines } from "pi-output-store";
+
 import type { WatchDefinition, WatchRuntimeState } from "./types.ts";
 
 /**
@@ -11,9 +13,15 @@ import type { WatchDefinition, WatchRuntimeState } from "./types.ts";
  */
 export class WatchRegistry {
 	readonly root: string;
+	readonly logsDir: string;
+	private readonly maxSegmentBytes: number | undefined;
+	private readonly writers = new Map<string, BoundedOutput>();
+	private readonly removed = new Set<string>();
 
-	constructor(root: string) {
+	constructor(root: string, logsDir = join(root, "logs"), maxSegmentBytes?: number) {
 		this.root = root;
+		this.logsDir = logsDir;
+		this.maxSegmentBytes = maxSegmentBytes;
 	}
 
 	get definitionsDir(): string {
@@ -22,10 +30,6 @@ export class WatchRegistry {
 
 	get stateDir(): string {
 		return join(this.root, "state");
-	}
-
-	get logsDir(): string {
-		return join(this.root, "logs");
 	}
 
 	definitionPath(id: string): string {
@@ -38,6 +42,10 @@ export class WatchRegistry {
 
 	logPath(id: string): string {
 		return join(this.logsDir, `${id}.log`);
+	}
+
+	private legacyLogPath(id: string): string {
+		return join(this.root, "logs", `${id}.log`);
 	}
 
 	/** Per-watch private state directory, exposed to scripts as $WATCH_STATE. */
@@ -88,32 +96,62 @@ export class WatchRegistry {
 		return definitions;
 	}
 
-	/** Remove the definition; logs and script state are kept for forensics. */
+	/** Remove durable definitions/state and every temporary output artifact. */
 	async remove(id: string): Promise<void> {
+		this.removed.add(id);
+		await this.closeLog(id);
+		await deleteOutput(this.logPath(id));
+		await unlink(this.legacyLogPath(id)).catch((error: NodeJS.ErrnoException) => {
+			if (error.code !== "ENOENT") throw error;
+		});
 		await unlink(this.definitionPath(id)).catch((error: NodeJS.ErrnoException) => {
 			if (error.code !== "ENOENT") throw error;
 		});
 		await unlink(this.statePath(id)).catch((error: NodeJS.ErrnoException) => {
 			if (error.code !== "ENOENT") throw error;
 		});
+		this.writers.delete(id);
+	}
+
+	private writer(id: string): BoundedOutput {
+		let writer = this.writers.get(id);
+		if (!writer) {
+			writer = new BoundedOutput(this.logPath(id), this.maxSegmentBytes === undefined ? {} : { maxSegmentBytes: this.maxSegmentBytes });
+			this.writers.set(id, writer);
+		}
+		return writer;
 	}
 
 	async appendLog(id: string, line: string): Promise<void> {
-		await mkdir(this.logsDir, { recursive: true, mode: 0o700 });
-		await writeFile(this.logPath(id), `${line}\n`, { encoding: "utf8", flag: "a", mode: 0o600 });
+		if (this.removed.has(id)) return;
+		await this.writer(id).append(`${line}\n`);
+	}
+
+	async readLog(id: string, maxLines: number) {
+		await this.writers.get(id)?.flush();
+		const result = await readOutputLines(this.logPath(id), maxLines);
+		if (result.lines.length > 0) return result;
+		try {
+			const raw = await readFile(this.legacyLogPath(id), "utf8");
+			const lines = raw.split("\n");
+			if (lines.at(-1) === "") lines.pop();
+			return { path: this.legacyLogPath(id), lines: lines.slice(-maxLines), omittedLines: 0 };
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return result;
+			throw error;
+		}
 	}
 
 	async readLogTail(id: string, maxLines: number): Promise<string[]> {
-		let raw: string;
-		try {
-			raw = await readFile(this.logPath(id), "utf8");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-			throw error;
-		}
-		const lines = raw.split("\n");
-		if (lines.at(-1) === "") lines.pop();
-		return lines.slice(-maxLines);
+		return (await this.readLog(id, maxLines)).lines;
+	}
+
+	async closeLog(id: string): Promise<void> {
+		await this.writers.get(id)?.close();
+	}
+
+	async closeLogs(): Promise<void> {
+		await Promise.all([...this.writers.values()].map((writer) => writer.close()));
 	}
 }
 
