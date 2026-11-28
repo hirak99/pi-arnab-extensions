@@ -60,6 +60,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 
 	async function startInboxDelivery(ctx: ExtensionContext): Promise<void> {
 		const agentId = requireSelf();
+		await inboxDelivery?.stop();
 		inboxDelivery = new InboxDelivery(
 			store,
 			(prompt, message, sender) => {

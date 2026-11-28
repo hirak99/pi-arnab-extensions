@@ -38,6 +38,7 @@ interface WatchNotificationDetails {
 
 interface WatchReloadBridge {
 	supervisor: WatchSupervisor;
+	knownWatches?: Map<string, WatchDefinition>;
 	sessionId: string;
 	root: string;
 }
@@ -166,15 +167,15 @@ export default function watchExtension(pi: ExtensionAPI) {
 					return `${sender.name} fired (message ${message.metadata.id}); use watch_tail for output.`;
 				},
 			},
-			(prompt, message, sender) => {
+			async (prompt, message, sender) => {
 				sendNativeNotification(pi, {
 					customType: WATCH_NOTIFICATION_TYPE,
 					content: prompt,
 					details: { senderName: sender.name, messageId: message.metadata.id },
 				});
-				// Watch notifications are fire-and-forget: acknowledge immediately
-				// so they are not re-delivered as backlog on the next session start.
-				void outbox.markRead(message.metadata.to ?? "", message.metadata.id).catch(() => undefined);
+				// Acknowledge within the tracked delivery queue so reload teardown
+				// waits for the durable receipt before the next backlog scan.
+				await outbox.markRead(message.metadata.to ?? "", message.metadata.id).catch(() => undefined);
 			},
 			(error) => {
 				if (ctx.hasUI) ctx.ui.notify(`Watch delivery error: ${error.message}`, "error");
@@ -211,6 +212,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		if (bridge && _event?.reason === "reload" && bridge.sessionId === nextSessionId && bridge.root === root) {
 			supervisor = bridge.supervisor;
 			supervisor.rebind(deliver, onStateChange);
+			for (const [id, definition] of bridge.knownWatches ?? []) knownWatches.set(id, definition);
 			definitions = supervisor.list(nextSessionId).map(({ definition }) => definition);
 		} else {
 			// A mismatched abandoned bridge must never leak processes into another
@@ -232,7 +234,7 @@ export default function watchExtension(pi: ExtensionAPI) {
 		statusApiUnsub?.();
 		statusApiUnsub = undefined;
 		if (event?.reason === "reload" && previousSessionId) {
-			storeWatchReloadBridge({ supervisor, sessionId: previousSessionId, root });
+			storeWatchReloadBridge({ supervisor, knownWatches, sessionId: previousSessionId, root });
 		} else {
 			await supervisor.shutdown();
 		}

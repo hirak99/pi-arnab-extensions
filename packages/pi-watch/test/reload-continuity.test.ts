@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
+import { MessageStore } from "pi-durable-inbox";
 
 import watchExtension from "../src/index.ts";
 
@@ -21,6 +22,7 @@ function createHarness(extension: typeof watchExtension = watchExtension) {
 	const handlers = new Map<string, (event: any, ctx: any) => Promise<void>>();
 	const tools = new Map<string, any>();
 	const busHandlers = new Map<string, Set<(event: any) => void>>();
+	const nativeMessages: Array<Record<string, unknown>> = [];
 	const pi = {
 		events: {
 			on(name: string, handler: (event: any) => void) {
@@ -40,7 +42,9 @@ function createHarness(extension: typeof watchExtension = watchExtension) {
 		getAllTools() {
 			return [...tools.values()];
 		},
-		sendMessage() {},
+		sendMessage(message: Record<string, unknown>) {
+			nativeMessages.push(message);
+		},
 	};
 	extension(pi as any);
 
@@ -51,6 +55,7 @@ function createHarness(extension: typeof watchExtension = watchExtension) {
 		sessionManager: { getSessionId: () => SESSION },
 	};
 	return {
+		nativeMessages,
 		async start(reason: "startup" | "reload") {
 			await handlers.get("session_start")!({ reason }, ctx);
 		},
@@ -129,4 +134,49 @@ test("reload preserves the live watch process; full restart auto-resumes it", as
 	assert.deepEqual(resumed.content, [{ type: "text", text: "Watch resumed." }]);
 	const removed = await third.call("watch_remove", { name: "continuity" });
 	assert.deepEqual(removed.content, [{ type: "text", text: "Watch removed." }]);
+});
+
+test("reload preserves removed-watch sender identity and awaits durable notification receipts", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-watch-reload-identity-"));
+	const previousRoot = process.env.PI_WATCH_DIR;
+	process.env.PI_WATCH_DIR = root;
+	const first = createHarness();
+	let second: ReturnType<typeof createHarness> | undefined;
+	t.after(async () => {
+		await second?.shutdown("quit").catch(() => undefined);
+		await first.shutdown("quit").catch(() => undefined);
+		if (previousRoot === undefined) delete process.env.PI_WATCH_DIR;
+		else process.env.PI_WATCH_DIR = previousRoot;
+		await rm(root, { recursive: true, force: true });
+	});
+
+	await first.start("startup");
+	await first.call("watch_create_stream", {
+		name: "removed-stream",
+		run: "echo final; while true; do sleep 1; done",
+		max_events: 1,
+	});
+	await waitFor(() => first.nativeMessages.length === 1, "initial capped notification");
+	const outbox = new MessageStore(join(root, "outbox"));
+	const initialNotification = first.nativeMessages[0] as any;
+	const [initialMessage] = await outbox.readInbox(SESSION, { messageId: initialNotification.details.messageId });
+	const watchId = initialMessage!.metadata.from.slice("watch:".length);
+	await first.shutdown("reload");
+
+	// Simulate the final capped/removed-watch alert becoming visible to the
+	// replacement runtime's backlog scan.
+	const pending = await outbox.sendDirect({ from: `watch:${watchId}`, to: SESSION, body: "Final alert" });
+	const reloadSpecifier = "../src/index.ts?reload-removed-identity";
+	const reloadedExtension = (await import(reloadSpecifier)).default as typeof watchExtension;
+	second = createHarness(reloadedExtension);
+	await second.start("reload");
+	await waitFor(() => second!.nativeMessages.length === 1, "removed-watch notification");
+	const notification = second.nativeMessages[0] as any;
+	assert.equal(notification.details.senderName, 'watch "removed-stream" (stream)');
+	await waitFor(async () => {
+		const [message] = await outbox.readInbox(SESSION, { messageId: pending.metadata.id });
+		return message?.read_at !== null;
+	}, "durable watch receipt");
+	const [receipt] = await outbox.readInbox(SESSION, { messageId: pending.metadata.id });
+	assert.equal(receipt?.read_at !== null, true);
 });

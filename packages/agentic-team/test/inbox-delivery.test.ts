@@ -170,6 +170,7 @@ test("native inline receipts prevent restart replay while references await inbox
 	const handlers = new Map<string, Handler[]>();
 	const nativeMessages: Array<Record<string, unknown>> = [];
 	const receiptEvents: Promise<unknown>[] = [];
+	const tools = new Map<string, any>();
 	const ctx = {
 		cwd: store.root,
 		hasUI: false,
@@ -185,7 +186,7 @@ test("native inline receipts prevent restart replay while references await inbox
 	const pi = {
 		registerMessageRenderer() {},
 		registerCommand() {},
-		registerTool() {},
+		registerTool(spec: any) { tools.set(spec.name, spec); },
 		appendEntry() {},
 		on(event: string, handler: Handler) {
 			const registered = handlers.get(event) ?? [];
@@ -262,6 +263,20 @@ test("native inline receipts prevent restart replay while references await inbox
 	}
 	const [stillUnreadReference] = await store.readInbox(recipient.agent_id, { messageId: reference.metadata.id });
 	assert.equal(stillUnreadReference?.read_at, null);
+
+	// Repeated registration must replace, not leak, inbox watchers.
+	await store.markRead(recipient.agent_id, reference.metadata.id);
+	for (let index = 0; index < 2; index++) {
+		await tools.get("team_register").execute(`register-${index}`, {
+			duties: "Test agent",
+			name: "Recipient",
+		}, undefined, undefined, ctx);
+	}
+	const before = nativeMessages.length;
+	await store.sendDirect({ from: sender.agent_id, to: recipient.agent_id, body: "After repeated registration" });
+	await waitFor(() => nativeMessages.length === before + 1);
+	await delay(50);
+	assert.equal(nativeMessages.length, before + 1);
 });
 
 test("terminal input injection is not present in the delivery implementation", async () => {
