@@ -9,7 +9,7 @@
 
 ![pi-discord-remote demo](demo.gif)
 
-Each time you run `/pi-discord-remote start`, the extension automatically creates a **new Discord text channel** named after your current project + date (e.g. `kaleidoscope-may09`). Messages sent in that channel are injected into Pi as user prompts; Pi's responses are posted back. When you stop, the channel is deleted — keeping your server clean within Discord's channel limit.
+Each time you run `/discord start`, the extension automatically creates a **new Discord text channel** named after your current project + date (e.g. `kaleidoscope-may09`). Messages sent in that channel are injected into Pi as user prompts; Pi's responses are posted back. When you stop, the channel is deleted — keeping your server clean within Discord's channel limit.
 
 ## Fork additions
 
@@ -34,7 +34,7 @@ ln -sfn ~/git/pi-discord-remote ~/.pi/agent/extensions/pi-discord-remote
 # 3. configure and connect
 #    edit ~/.pi/agent/pi-discord-remote/config.json (token, guildId, allowedUserIds)
 #    in pi:
-/pi-discord-remote start
+/discord start
 ```
 
 Note: pi's `/reload` loads fresh extension modules. This package preserves an
@@ -200,7 +200,7 @@ only when there are no subagents, background jobs, or watches to display.
 
 ### Auto-start (per-project opt-in)
 
-By default nothing connects until you run `/pi-discord-remote start`. A
+By default nothing connects until you run `/discord start`. A
 project can opt in to automatic connection by adding
 `.pi/discord-remote.json` to the project:
 
@@ -221,7 +221,7 @@ only needs to live in the global config. Details:
   project file stay manual
 - an unparseable project file logs a warning and falls back to the global
   config — a broken opt-in never breaks the session
-- `/pi-discord-remote start` also honors the project overrides
+- `/discord start` also honors the project overrides
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
@@ -302,11 +302,11 @@ pi install npm:pi-discord-remote
 ## Usage
 
 ```
-/pi-discord-remote setup        — configure token, server ID, optional category
-/pi-discord-remote start        — create channel + connect
-/pi-discord-remote stop         — delete channel + disconnect
-/pi-discord-remote status       — show connection state
-/pi-discord-remote open-config  — edit config JSON in Pi's editor
+/discord setup        — configure token, server ID, optional category
+/discord start        — create channel + connect
+/discord stop         — delete channel + disconnect
+/discord status       — show connection state
+/discord open-config  — edit config JSON in Pi's editor
 ```
 
 ### Setup prompts
@@ -343,16 +343,16 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `staticChannel` | boolean | `false` | Keep the channel across sessions (lock read-only on end, reuse on next session) — see above |
 | `channelName` | string | — | Explicit channel name, no date suffix, honored with or without `staticChannel` — see above |
 
-Edit config with `/pi-discord-remote open-config`.
+Edit config with `/discord open-config`.
 
 ## How it works
 
 The extension loads silently on Pi startup — no channel is created until you explicitly run the command.
 
-- **`/pi-discord-remote start`** — bot logs in, creates a text channel named `<project>-<mon><dd>-<HHMM>`, and starts listening there only
+- **`/discord start`** — bot logs in, creates a text channel named `<project>-<mon><dd>-<HHMM>`, and starts listening there only
 - **Incoming message** — injected as a user prompt into the active Pi session; bot reacts ⏳ while Pi works, then posts the completed response back. Each assistant reply is appended as its own message, in transcript order, when it completes (no live editing)
 - **Tool calls** — each invocation posts a short summary with an emoji and a path when relevant (🔧 running a command, 📄 reading a file, 📝 writing to a file); commands, search patterns, and tool results are not mirrored
-- **`/pi-discord-remote stop`** (or Pi exit) — channel is deleted, bot disconnects
+- **`/discord stop`** (or Pi exit) — channel is deleted, bot disconnects
 
 ### Optional image skill tool
 
@@ -366,7 +366,7 @@ If you want to send an image, use the explicit `discord_send_image` tool (opt-in
 
 Exactly one source should be provided per call. If omitted, the tool falls back to the latest `agent_browser` image artifact path.
 
-`/pi-discord-remote status` now shows the active **Channel ID** so you can pass it directly to `discord_send_image`.
+`/discord status` now shows the active **Channel ID** so you can pass it directly to `discord_send_image`.
 
 The tool returns explicit send errors (for example `unknown_channel:<id>` or timeout/HTTP errors) instead of silently forwarding images.
 

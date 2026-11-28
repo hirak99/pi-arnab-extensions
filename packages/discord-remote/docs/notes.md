@@ -20,17 +20,17 @@ section with day-to-day operations and diagnosis.
 # 1. start pi (tmux/nohup if you want it to survive disconnects)
 pi
 # 2. inside pi:
-/pi-discord-remote start
+/discord start
 # 3. optional check
-/pi-discord-remote status
+/discord status
 ```
 
 A channel named `<project>-<date>` appears in your Discord server. Type there =
-a turn in this session. `/pi-discord-remote stop` tears the channel down.
+a turn in this session. `/discord stop` tears the channel down.
 
 ## If it's broken, diagnose in this order
 
-1. **Is the extension loaded?** In pi, is `/pi-discord-remote` in the command
+1. **Is the extension loaded?** In pi, is `/discord` in the command
    list? If not: check the symlink exists
    (`ls -la ~/.pi/agent/extensions/`), and if pi was updated, reload settings
    with `/reload` or restart pi.
@@ -60,9 +60,9 @@ a turn in this session. `/pi-discord-remote stop` tears the channel down.
    - `Your user ID is not on the allow-list` → a username was pasted, not an
      ID. Right-click your own name in the member list → **Copy User ID**
      (needs Developer Mode on). Must be a 17–20 digit number. Then
-     `/pi-discord-remote stop` + `start` (config is snapshotted at connect).
+     `/discord stop` + `start` (config is snapshotted at connect).
    - Bot offline in Discord → the pi session hosting it isn't running or the
-     extension was stopped. `/pi-discord-remote status` tells you.
+     extension was stopped. `/discord status` tells you.
 
 ## Editing the fork
 
@@ -71,7 +71,7 @@ cd ~/git/pi-discord-remote
 # edit extensions/*.ts, then:
 npm run build
 # then FULL pi restart (/reload does NOT pick up rebuilds — module stays cached):
-# exit pi, relaunch, /pi-discord-remote start
+# exit pi, relaunch, /discord start
 ```
 
 Update the `~/.pi/agent/extensions/pi-discord-remote` symlink if the clone
@@ -118,7 +118,7 @@ See the README's "Fork additions" section for full descriptions.
   Blocked: pi exposes `ctx.abort()` only inside event-handler contexts, not
   to the Discord message path. Candidate for an upstream pi feature request.
 - **Version indicator** — show git commit hash + commits-ahead in
-  `/pi-discord-remote status`, derived at build time (no manual bumping).
+  `/discord status`, derived at build time (no manual bumping).
 - **Hot-reload upstream issue** — pi's `/reload` keeps stale extension module
   code (verified: no re-import even for auto-discovered extensions), so every
   fork change needs a full pi restart. Worth reporting upstream.

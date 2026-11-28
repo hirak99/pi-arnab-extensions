@@ -1,7 +1,7 @@
 /**
  * pi-discord-remote — control this Pi session from Discord
  *
- * Each /pi-discord-remote start creates a fresh text channel named after the
+ * Each /discord start creates a fresh text channel named after the
  * current working directory + date (e.g. "kaleidoscope-may09").  On stop
  * (or session shutdown) the channel is deleted to stay within Discord's
  * per-server channel limit.
@@ -11,11 +11,11 @@
  *   • Manage Channels                    (new — for create + rename)
  *
  * Commands:
- *   /pi-discord-remote setup       — interactive setup (token, guildId, categoryId, allowed users)
- *   /pi-discord-remote start       — create channel + connect
- *   /pi-discord-remote stop        — delete channel + disconnect
- *   /pi-discord-remote status      — show connection state
- *   /pi-discord-remote open-config — edit config.json in the editor
+ *   /discord setup       — interactive setup (token, guildId, categoryId, allowed users)
+ *   /discord start       — create channel + connect
+ *   /discord stop        — delete channel + disconnect
+ *   /discord status      — show connection state
+ *   /discord open-config — edit config.json in the editor
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -1173,7 +1173,7 @@ export default function (pi: ExtensionAPI) {
       );
       reconnectFailed = true;
       connectNotify?.(
-        `❌ Discord reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts. Run /pi-discord-remote start to retry.`,
+        `❌ Discord reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts. Run /discord start to retry.`,
         "error",
       );
       connectSetStatus?.("pi-discord-remote", colorStatus("❌ Discord: reconnect failed", "error"));
@@ -1417,7 +1417,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // Auto-connect removed — user must run /pi-discord-remote start explicitly.
+  // Auto-connect removed — user must run /discord start explicitly.
 
   // ── Connect + channel-create helper ──────────────────────────────────────
 
@@ -1935,7 +1935,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── Command ───────────────────────────────────────────────────────────────
 
-  pi.registerCommand("pi-discord-remote", {
+  pi.registerCommand("discord", {
     description: "Control this Pi session from Discord (creates a new channel per session)",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handler: async (args: any, ctx: any) => {
@@ -1991,7 +1991,7 @@ export default function (pi: ExtensionAPI) {
           activeRoot = ctx.cwd;
           const cfg = await loadEffectiveConfig(ctx.cwd);
           if (!cfg) {
-            ctx.ui.notify("No config found. Run /pi-discord-remote setup first.", "error");
+            ctx.ui.notify("No config found. Run /discord setup first.", "error");
             return;
           }
           await startClient(
@@ -2045,11 +2045,11 @@ export default function (pi: ExtensionAPI) {
             );
           } else if (reconnectFailed) {
             ctx.ui.notify(
-              `❌ Reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts. Run /pi-discord-remote stop then start to retry.`,
+              `❌ Reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts. Run /discord stop then start to retry.`,
               "error",
             );
           } else {
-            ctx.ui.notify("❌ Not connected. Run /pi-discord-remote start.", "info");
+            ctx.ui.notify("❌ Not connected. Run /discord start.", "info");
           }
           break;
         }
@@ -2077,11 +2077,11 @@ export default function (pi: ExtensionAPI) {
         default: {
           ctx.ui.notify(
             [
-              "/pi-discord-remote setup       — configure bot token, guild, category",
-              "/pi-discord-remote start       — create channel + connect",
-              "/pi-discord-remote stop        — delete channel + disconnect",
-              "/pi-discord-remote status      — show connection state",
-              "/pi-discord-remote open-config — edit config JSON",
+              "/discord setup       — configure bot token, guild, category",
+              "/discord start       — create channel + connect",
+              "/discord stop        — delete channel + disconnect",
+              "/discord status      — show connection state",
+              "/discord open-config — edit config JSON",
             ].join("\n"),
             "info",
           );

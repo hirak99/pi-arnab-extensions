@@ -72,6 +72,7 @@ function createHarness(extension: typeof registerExtension = registerExtension) 
   const handlers = new Map<string, EventHandler>();
   const busHandlers = new Map<string, (event: any) => unknown>();
   let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
+  let commandName: string | undefined;
   const pi = {
     events: {
       on: vi.fn((name: string, handler: (event: any) => unknown) => {
@@ -83,7 +84,8 @@ function createHarness(extension: typeof registerExtension = registerExtension) 
     on: vi.fn((name: string, handler: EventHandler) => {
       handlers.set(name, handler);
     }),
-    registerCommand: vi.fn((_name: string, spec: { handler: typeof commandHandler }) => {
+    registerCommand: vi.fn((name: string, spec: { handler: typeof commandHandler }) => {
+      commandName = name;
       commandHandler = spec.handler;
     }),
     registerTool: vi.fn(),
@@ -94,6 +96,7 @@ function createHarness(extension: typeof registerExtension = registerExtension) 
 
   return {
     pi,
+    commandName: () => commandName,
     async start(ctx: any) {
       if (!commandHandler) throw new Error("Command was not registered");
       await commandHandler("start", ctx);
@@ -130,6 +133,13 @@ afterEach(() => {
 });
 
 describe("Discord client reload handoff", () => {
+  it("registers only the concise discord command", () => {
+    const harness = createHarness();
+    expect(harness.commandName()).toBe("discord");
+    expect(harness.pi.registerCommand).toHaveBeenCalledOnce();
+    expect(harness.pi.registerCommand).not.toHaveBeenCalledWith("pi-discord-remote", expect.anything());
+  });
+
   it.each(["new", "resume", "startup"])("auto-starts a %s session when the project opts in", async (reason) => {
     vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({
       token: "test-token",

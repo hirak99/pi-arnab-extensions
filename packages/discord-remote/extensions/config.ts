@@ -44,7 +44,7 @@ export interface Config {
    * (default: false). */
   steer?: boolean;
   /** Connect to Discord automatically when a new or resumed session starts
-   * (default: false — connect only via /pi-discord-remote start). Intended
+   * (default: false — connect only via /discord start). Intended
    * as a per-project opt-in in .pi/discord-remote.json, but honored in the
    * global config too. Reloads are never auto-connected: the existing
    * connection survives a reload. */
