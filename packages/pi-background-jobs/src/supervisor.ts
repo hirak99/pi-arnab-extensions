@@ -17,6 +17,7 @@ interface JobEntry {
 	settle: () => void;
 	saveChain: Promise<void>;
 	finished: boolean;
+	finalized: boolean;
 	notified: boolean;
 	seen: boolean;
 	requestedStatus: "failed" | "killed" | null;
@@ -44,6 +45,7 @@ function newEntry(task: JobTask, historical = false): JobEntry {
 		settle,
 		saveChain: Promise.resolve(),
 		finished: historical,
+		finalized: historical,
 		notified: historical,
 		seen: historical,
 		requestedStatus: null,
@@ -91,7 +93,7 @@ export class JobSupervisor {
 		this.onError = onError;
 		this.onStateChange();
 		for (const entry of this.entries.values()) {
-			if (entry.finished && !entry.notified) this.publish(entry);
+			if (entry.finished && entry.finalized && !entry.notified) this.publish(entry);
 		}
 	}
 
@@ -333,6 +335,7 @@ export class JobSupervisor {
 		} catch (error) {
 			this.onError?.(error instanceof Error ? error : new Error(String(error)));
 		}
+		entry.finalized = true;
 		try {
 			this.onStateChange?.();
 		} catch (error) {

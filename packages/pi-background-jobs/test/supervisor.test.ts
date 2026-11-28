@@ -82,6 +82,38 @@ test("reload detachment preserves the process and defers completion exactly once
 	assert.ok(pid && pid > 0);
 });
 
+test("reload rebind waits for log and durable metadata finalization", async (t) => {
+	const { supervisor, delivered, deliver, onError, sessionId } = await fixture(t);
+	const store = (supervisor as any).store;
+	const originalSave = store.save.bind(store);
+	let terminalSaveStarted!: () => void;
+	const saveStarted = new Promise<void>((resolve) => { terminalSaveStarted = resolve; });
+	let releaseTerminalSave!: () => void;
+	const saveGate = new Promise<void>((resolve) => { releaseTerminalSave = resolve; });
+	store.save = async (task: JobTask) => {
+		if (task.status === "completed") {
+			terminalSaveStarted();
+			await saveGate;
+		}
+		await originalSave(task);
+	};
+	const started = await supervisor.start(sessionId, {
+		name: "Finalization barrier",
+		command: "printf 'complete output\\n'",
+		cwd: "/tmp",
+	});
+	supervisor.detach();
+	await saveStarted;
+	supervisor.rebind(deliver, () => {}, onError);
+	assert.equal(delivered.length, 0, "finished is not publishable until finalization completes");
+	releaseTerminalSave();
+	await supervisor.resolve(started.id, sessionId).done;
+	assert.equal(delivered.length, 1);
+	assert.match(await readFile(started.output_path, "utf8"), /complete output/);
+	supervisor.rebind(deliver, () => {}, onError);
+	assert.equal(delivered.length, 1);
+});
+
 test("job kill terminates the POSIX process group and preserves logs", async (t) => {
 	if (process.platform === "win32") return;
 	const { supervisor, delivered, sessionId } = await fixture(t);
