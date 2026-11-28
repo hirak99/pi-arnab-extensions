@@ -54,6 +54,7 @@ import {
   formatErrorForDiscord,
 } from "./helpers.js";
 import { colorStatus } from "./status-color.js";
+import { detectImageMediaType, formatByteSize } from "./image-metadata.js";
 
 // ─── Reconnection constants ──────────────────────────────────────────────────
 const RECONNECT_BASE_DELAY_MS = 2_000;
@@ -70,6 +71,17 @@ interface ReloadBridge {
   sessionChannelName: string | null;
   sessionId: string | null;
   root: string;
+}
+
+interface ImageSendResult {
+  ok: boolean;
+  sentAs?: "path" | "url" | "base64";
+  error?: string;
+  source?: string;
+  filename?: string;
+  mediaType?: string;
+  size?: number;
+  destination?: string;
 }
 
 const RELOAD_BRIDGE_KEY = Symbol.for("pi-discord-remote.reload-bridge");
@@ -678,7 +690,7 @@ export default function (pi: ExtensionAPI) {
     mediaType?: string;
     filename?: string;
     caption?: string;
-  }): Promise<{ ok: boolean; sentAs?: string; error?: string }> {
+  }): Promise<ImageSendResult> {
     const targetChannelId = getTargetChannelId(params.channelId);
     if (!client?.isReady()) {
       return { ok: false, error: "discord_not_connected" };
@@ -687,7 +699,7 @@ export default function (pi: ExtensionAPI) {
       return { ok: false, error: "no_active_channel" };
     }
 
-    const sendOnce = async (): Promise<{ ok: boolean; sentAs?: string; error?: string }> => {
+    const sendOnce = async (): Promise<ImageSendResult> => {
       const channel = (await withTimeout(
         client!.channels.fetch(targetChannelId),
         15_000,
@@ -699,6 +711,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const content = params.caption?.trim() || undefined;
+      const destination = channel.name ? `#${channel.name}` : targetChannelId;
       const token = activeConfig?.token?.trim();
       if (!token) return { ok: false, error: "missing_bot_token" };
 
@@ -707,16 +720,17 @@ export default function (pi: ExtensionAPI) {
         if (!existsSync(filePath)) return { ok: false, error: `file_not_found:${filePath}` };
         const buffer = await withTimeout(readFile(filePath), 5_000, "read_file");
         const name = params.filename?.trim() || basename(filePath);
+        const mediaType = params.mediaType?.trim() || detectImageMediaType(buffer, name);
         const sent = await sendMessageViaDiscordRest({
           channelId: targetChannelId,
           token,
           content,
           filename: name,
-          mediaType: "image/png",
+          mediaType,
           bytes: buffer,
         });
         if (!sent.ok) return { ok: false, error: sent.error ?? "send_path_failed" };
-        return { ok: true, sentAs: "path" };
+        return { ok: true, sentAs: "path", source: filePath, filename: name, mediaType, size: buffer.length, destination };
       }
 
       if (params.url) {
@@ -727,7 +741,7 @@ export default function (pi: ExtensionAPI) {
           content: body,
         });
         if (!sent.ok) return { ok: false, error: sent.error ?? "send_url_failed" };
-        return { ok: true, sentAs: "url" };
+        return { ok: true, sentAs: "url", source: params.url.trim(), destination };
       }
 
       if (params.base64) {
@@ -744,7 +758,7 @@ export default function (pi: ExtensionAPI) {
           bytes: buffer,
         });
         if (!sent.ok) return { ok: false, error: sent.error ?? "send_base64_failed" };
-        return { ok: true, sentAs: "base64" };
+        return { ok: true, sentAs: "base64", source: "inline image data", filename: name, mediaType, size: buffer.length, destination };
       }
 
       return { ok: false, error: "missing_source" };
@@ -1582,7 +1596,7 @@ export default function (pi: ExtensionAPI) {
       filename: Type.Optional(Type.String()),
       caption: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const normalized = { ...params };
       let provided = [normalized.path, normalized.url, normalized.base64].filter(Boolean).length;
       if (provided === 0 && lastImageArtifactPath) {
@@ -1591,13 +1605,15 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (provided !== 1) {
+        const text = "Provide exactly one image source: path, url, or base64.";
+        if (ctx.hasUI) ctx.ui.notify(`⚠ Image not sent: ${text}`, "error");
         return {
-          content: [{ type: "text", text: "Provide exactly one image source: path, url, or base64." }],
+          content: [{ type: "text", text }],
           details: { ok: false, error: "invalid_source_count" },
         };
       }
 
-      let result: { ok: boolean; sentAs?: string; error?: string };
+      let result: ImageSendResult;
       try {
         result = await withTimeout(
           sendAttachmentToActiveChannel(normalized),
@@ -1609,10 +1625,25 @@ export default function (pi: ExtensionAPI) {
         result = { ok: false, error: msg };
       }
       if (!result.ok) {
+        const text = `Failed to send image to Discord: ${result.error}`;
+        if (ctx.hasUI) ctx.ui.notify(`⚠ ${text}`, "error");
         return {
-          content: [{ type: "text", text: `Failed to send image to Discord: ${result.error}` }],
+          content: [{ type: "text", text }],
           details: result,
         };
+      }
+
+      if (ctx.hasUI) {
+        const lines = [result.sentAs === "url" ? "🖼 Image URL posted to Discord" : "🖼 Image sent to Discord"];
+        if (result.source) lines.push(`Source: ${result.source}`);
+        if (result.filename) {
+          const metadata = [result.mediaType, result.size === undefined ? undefined : formatByteSize(result.size)]
+            .filter(Boolean)
+            .join(" · ");
+          lines.push(`Attachment: ${result.filename}${metadata ? ` · ${metadata}` : ""}`);
+        }
+        if (result.destination) lines.push(`Destination: ${result.destination}`);
+        ctx.ui.notify(lines.join("\n"), "info");
       }
 
       return {

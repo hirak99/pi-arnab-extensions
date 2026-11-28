@@ -370,6 +370,15 @@ Exactly one source should be provided per call. If omitted, the tool falls back 
 
 The tool returns explicit send errors (for example `unknown_channel:<id>` or timeout/HTTP errors) instead of silently forwarding images.
 
+After each attempted send, an interactive TUI shows a local-only success or
+failure notification. Success includes the full local path or supplied URL, the
+destination channel, and attachment filename/media type/byte size when
+available. Base64 input is described as `inline image data`; its payload is
+never printed. These notifications use `ctx.ui.notify()` and are not mirrored
+to Discord or added to the concise model-facing result. Headless sessions skip
+them. Local-path uploads detect common image media types from file bytes, with
+an extension fallback, rather than always labeling files as PNG.
+
 ## License
 
 MIT

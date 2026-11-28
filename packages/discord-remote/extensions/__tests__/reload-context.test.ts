@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const discord = vi.hoisted(() => {
   const channel = {
@@ -71,6 +74,7 @@ type EventHandler = (event: any, ctx?: any) => Promise<unknown>;
 function createHarness(extension: typeof registerExtension = registerExtension) {
   const handlers = new Map<string, EventHandler>();
   const busHandlers = new Map<string, (event: any) => unknown>();
+  const tools = new Map<string, any>();
   let commandHandler: ((args: string, ctx: any) => Promise<void>) | undefined;
   let commandName: string | undefined;
   const pi = {
@@ -88,7 +92,9 @@ function createHarness(extension: typeof registerExtension = registerExtension) 
       commandName = name;
       commandHandler = spec.handler;
     }),
-    registerTool: vi.fn(),
+    registerTool: vi.fn((spec: any) => {
+      tools.set(spec.name, spec);
+    }),
     sendUserMessage: vi.fn(),
   };
 
@@ -98,6 +104,11 @@ function createHarness(extension: typeof registerExtension = registerExtension) 
     pi,
     commandName: () => commandName,
     hasHandler: (name: string) => handlers.has(name),
+    tool: (name: string) => {
+      const tool = tools.get(name);
+      if (!tool) throw new Error(`Tool was not registered: ${name}`);
+      return tool;
+    },
     async start(ctx: any) {
       if (!commandHandler) throw new Error("Command was not registered");
       await commandHandler("start", ctx);
@@ -131,6 +142,7 @@ function makeAutoStartContext(options: { parentSession?: string; persisted?: boo
 afterEach(() => {
   Reflect.deleteProperty(globalThis, Symbol.for("pi-discord-remote.reload-bridge"));
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("Discord client reload handoff", () => {
@@ -391,5 +403,110 @@ describe("Discord client reload handoff", () => {
     ]);
 
     await harness.emit("session_shutdown", { reason: "quit" });
+  });
+});
+
+describe("Discord image TUI metadata", () => {
+  async function startImageHarness(interactive = true) {
+    const harness = createHarness();
+    const ctx = makeAutoStartContext({ interactive });
+    await harness.start(ctx);
+    ctx.ui.notify.mockClear();
+    const fetchMock = vi.fn(async (_url: any, _init?: any) => ({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = discord.instances[discord.instances.length - 1];
+    return { harness, ctx, fetchMock, client };
+  }
+
+  it("shows full local path and detected attachment metadata without changing the model result", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-discord-image-"));
+    const filePath = join(directory, "photo.jpg");
+    await writeFile(filePath, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0xff, 0xd9]));
+    const { harness, ctx, fetchMock } = await startImageHarness();
+    try {
+      const result = await harness.tool("discord_send_image").execute("image", {
+        path: filePath,
+        channelId: "channel-1",
+      }, undefined, undefined, ctx);
+      expect(result.content).toEqual([{ type: "text", text: "Image sent to Discord (path)." }]);
+      const notification = ctx.ui.notify.mock.calls.map(([text]) => text).join("\n");
+      expect(notification).toContain("🖼 Image sent to Discord");
+      expect(notification).toContain(`Source: ${filePath}`);
+      expect(notification).toContain("Attachment: photo.jpg · image/jpeg · 8 B");
+      expect(notification).toContain("Destination: #test-channel");
+      const request = fetchMock.mock.calls[0]?.[1] as any;
+      const upload = (request.body as FormData).get("files[0]") as Blob;
+      expect(upload.type).toBe("image/jpeg");
+    } finally {
+      await harness.emit("session_shutdown", { reason: "quit" });
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("shows the complete URL locally while keeping it out of the model result", async () => {
+    const { harness, ctx } = await startImageHarness();
+    const url = "https://example.com/image.png?width=256&signature=test-value";
+    try {
+      const result = await harness.tool("discord_send_image").execute("image", {
+        url,
+        channelId: "channel-1",
+      }, undefined, undefined, ctx);
+      expect(result.content).toEqual([{ type: "text", text: "Image sent to Discord (url)." }]);
+      expect(result.content[0].text).not.toContain(url);
+      const notification = ctx.ui.notify.mock.calls.map(([text]) => text).join("\n");
+      expect(notification).toContain("🖼 Image URL posted to Discord");
+      expect(notification).toContain(`Source: ${url}`);
+      expect(notification).not.toContain("Attachment:");
+    } finally {
+      await harness.emit("session_shutdown", { reason: "quit" });
+    }
+  });
+
+  it("summarizes inline data without displaying its base64 payload", async () => {
+    const { harness, ctx } = await startImageHarness();
+    const base64 = Buffer.from([1, 2, 3, 4]).toString("base64");
+    try {
+      await harness.tool("discord_send_image").execute("image", {
+        base64,
+        mediaType: "image/webp",
+        filename: "raw.webp",
+        channelId: "channel-1",
+      }, undefined, undefined, ctx);
+      const notification = ctx.ui.notify.mock.calls.map(([text]) => text).join("\n");
+      expect(notification).toContain("Source: inline image data");
+      expect(notification).toContain("Attachment: raw.webp · image/webp · 4 B");
+      expect(notification).not.toContain(base64);
+    } finally {
+      await harness.emit("session_shutdown", { reason: "quit" });
+    }
+  });
+
+  it("reports real disconnection locally without attempting a send", async () => {
+    const { harness, ctx, fetchMock, client } = await startImageHarness();
+    client.isReady.mockReturnValue(false);
+    try {
+      const result = await harness.tool("discord_send_image").execute("image", {
+        path: "/tmp/not-read.png",
+        channelId: "channel-1",
+      }, undefined, undefined, ctx);
+      expect(result.content[0].text).toContain("discord_not_connected");
+      expect(ctx.ui.notify).toHaveBeenCalledWith("⚠ Failed to send image to Discord: discord_not_connected", "error");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      await harness.emit("session_shutdown", { reason: "quit" });
+    }
+  });
+
+  it("does not emit UI notifications in a headless context", async () => {
+    const { harness, ctx } = await startImageHarness(false);
+    try {
+      await harness.tool("discord_send_image").execute("image", {
+        url: "https://example.com/image.png",
+        channelId: "channel-1",
+      }, undefined, undefined, ctx);
+      expect(ctx.ui.notify).not.toHaveBeenCalled();
+    } finally {
+      await harness.emit("session_shutdown", { reason: "quit" });
+    }
   });
 });
