@@ -1046,8 +1046,9 @@ export default function (pi: ExtensionAPI) {
   // so children (including in-memory children) never create independent
   // Discord mirrors. This deliberately avoids parentSession lineage checks:
   // legitimate top-level handoffs and forks also carry parentSession.
-  // Headless sessions are manual-only. "reload" adopts the same-session
-  // bridged client, or falls through to autoStart when no bridge exists.
+  // Headless sessions are manual-only. "reload" only adopts a valid
+  // same-session bridged client; without one it remains disconnected and
+  // never applies initial-launch autoStart policy.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pi.on("session_start", async (event: any, ctx: any) => {
     connectNotify = (msg, level) => ctx.ui.notify(msg, level);
@@ -1082,10 +1083,13 @@ export default function (pi: ExtensionAPI) {
         }, RELOAD_LIVENESS_GRACE_MS);
         return;
       }
-      // No valid bridge: an interactive reload may still auto-start below.
+      // No valid bridge: reload never applies autoStart. Clean up an
+      // invalid/mismatched bridge and leave this session disconnected.
+      if (preserved) await preserved.client.destroy().catch(() => {});
+      return;
     }
     if (preserved) await preserved.client.destroy().catch(() => {});
-    if (event?.reason !== "new" && event?.reason !== "resume" && event?.reason !== "startup" && event?.reason !== "reload") return;
+    if (event?.reason !== "new" && event?.reason !== "resume" && event?.reason !== "startup") return;
     if (!ctx?.hasUI) return;
     if (client) return;
     const cfg = await loadEffectiveConfig(ctx?.cwd);

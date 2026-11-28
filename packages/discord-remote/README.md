@@ -217,15 +217,17 @@ only needs to live in the global config. Details:
   and `startup`; some Pi launch paths use `startup` even when resuming an
   existing session. Non-interactive subagent and headless sessions are
   manual-only, preventing child activity from opening an independent Discord
-  mirror. Reloads keep the existing connection, and sessions without the
-  project file stay manual
+  mirror. `autoStart` applies only to these full Pi/session launches, never to
+  an in-process `/reload`. Reload exclusively preserves a valid bridged client
+  and its existing channel; without one, the session remains disconnected.
+  Sessions without the project file stay manual
 - an unparseable project file logs a warning and falls back to the global
   config — a broken opt-in never breaks the session
 - `/discord start` also honors the project overrides
 
 | Config key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `autoStart` | boolean | `false` | Connect automatically for interactive `new`, `resume`, or `startup` session starts, and for `reload` when no live client is bridged; non-interactive subagent and headless sessions are manual-only (intended as a per-project opt-in via `.pi/discord-remote.json`) |
+| `autoStart` | boolean | `false` | Connect automatically only for interactive `new`, `resume`, or `startup` Pi/session launches; never for `/reload`. Reload only adopts an existing bridged client and otherwise remains disconnected. Non-interactive subagent and headless sessions are manual-only (intended as a per-project opt-in via `.pi/discord-remote.json`) |
 
 ### Static channels
 
@@ -339,7 +341,7 @@ For CI or headless setups, you can skip `setup` entirely and set these env vars:
 | `categoryId` | string | — | Optional category for auto-created channels |
 | `allowedUserIds` | string[] | `[]` | Allow-list of Discord user IDs (empty = everyone) |
 | `reactions` | boolean | `true` | React with ⏳ while processing |
-| `autoStart` | boolean | `false` | Connect automatically for interactive `new`, `resume`, or `startup` session starts, and for `reload` when no live client is bridged; non-interactive subagent and headless sessions are manual-only — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
+| `autoStart` | boolean | `false` | Connect automatically only for interactive `new`, `resume`, or `startup` Pi/session launches; never for `/reload`. Reload only adopts an existing bridged client and otherwise remains disconnected. Non-interactive subagent and headless sessions are manual-only — intended as a per-project opt-in via `.pi/discord-remote.json` (see above) |
 | `staticChannel` | boolean | `false` | Keep the channel across sessions (lock read-only on end, reuse on next session) — see above |
 | `channelName` | string | — | Explicit channel name, no date suffix, honored with or without `staticChannel` — see above |
 

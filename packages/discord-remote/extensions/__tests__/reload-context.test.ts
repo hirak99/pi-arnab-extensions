@@ -289,12 +289,8 @@ describe("Discord client reload handoff", () => {
     expect(client.destroy).toHaveBeenCalledOnce();
   });
 
-  it("auto-starts an interactive reload when no bridge exists", async () => {
-    vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({
-      token: "test-token",
-      guildId: "guild-1",
-      autoStart: true,
-    });
+  it("ignores autoStart on an interactive reload when no bridge exists", async () => {
+    vi.mocked(loadEffectiveConfig).mockClear();
     const freshSpecifier = "../index.js?reload-without-bridge";
     const freshExtension = (await import(freshSpecifier)).default;
     const harness = createHarness(freshExtension);
@@ -302,10 +298,8 @@ describe("Discord client reload handoff", () => {
 
     await harness.emit("session_start", { reason: "reload" }, makeAutoStartContext());
 
-    expect(discord.instances).toHaveLength(before + 1);
-    expect(discord.instances[before].login).toHaveBeenCalledWith("test-token");
-    expect(loadEffectiveConfig).toHaveBeenCalledWith("/test-project");
-    await harness.emit("session_shutdown", { reason: "quit" });
+    expect(discord.instances).toHaveLength(before);
+    expect(loadEffectiveConfig).not.toHaveBeenCalled();
   });
 
   it("does not auto-start a non-interactive reload without a bridge", async () => {

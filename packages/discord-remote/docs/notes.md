@@ -89,7 +89,9 @@ ever moves. Commit early; push when you want the work backed up remotely.
 - `steer: true` — Discord messages sent mid-turn are injected into the
   running turn (delivered before the agent's next LLM call), not dropped.
 - `autoStart: true` (per-project `.pi/discord-remote.json`) — connect
-  automatically when a new/resumed session starts in that project.
+  automatically for an interactive new/resumed/full-startup session in that
+  project. In-process `/reload` never auto-starts: it only preserves an
+  existing bridged connection and otherwise remains disconnected.
 - `staticChannel: true` (same file) — keep the project's channel across
   sessions: 🔒 read-only (`@everyone` Send Messages deny) at session end,
   🔓 reused/unlocked by the next session. Needs **Manage Roles** on the bot.
