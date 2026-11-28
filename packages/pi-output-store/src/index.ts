@@ -223,6 +223,10 @@ export class BoundedOutput {
 		return this.enqueue(() => this.appendNow(value));
 	}
 
+	open(): Promise<void> {
+		return this.enqueue(() => this.initialize());
+	}
+
 	flush(): Promise<void> {
 		return this.queue;
 	}

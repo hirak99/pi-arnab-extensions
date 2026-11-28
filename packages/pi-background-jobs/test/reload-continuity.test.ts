@@ -73,12 +73,16 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 	const root = await mkdtemp(join(tmpdir(), "pi-background-jobs-reload-"));
 	const marker = join(root, "pids");
 	const previousRoot = process.env.PI_JOBS_DIR;
+	const previousOutputRoot = process.env.PI_JOBS_OUTPUT_DIR;
 	process.env.PI_JOBS_DIR = root;
+	process.env.PI_JOBS_OUTPUT_DIR = join(root, "output");
 	const harnesses: Array<ReturnType<typeof createHarness>> = [];
 	t.after(async () => {
 		for (const harness of harnesses) await harness.shutdown("quit").catch(() => undefined);
 		if (previousRoot === undefined) delete process.env.PI_JOBS_DIR;
 		else process.env.PI_JOBS_DIR = previousRoot;
+		if (previousOutputRoot === undefined) delete process.env.PI_JOBS_OUTPUT_DIR;
+		else process.env.PI_JOBS_OUTPUT_DIR = previousOutputRoot;
 		await rm(root, { recursive: true, force: true });
 	});
 
@@ -137,12 +141,16 @@ test("fresh-module reload preserves PID and logs, then restart retains only hist
 test("job_clear validates input and deletes only finished jobs", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-background-jobs-clear-"));
 	const previousRoot = process.env.PI_JOBS_DIR;
+	const previousOutputRoot = process.env.PI_JOBS_OUTPUT_DIR;
 	process.env.PI_JOBS_DIR = root;
+	process.env.PI_JOBS_OUTPUT_DIR = join(root, "output");
 	const harness = createHarness(backgroundJobsExtension);
 	t.after(async () => {
 		await harness.shutdown("quit").catch(() => undefined);
 		if (previousRoot === undefined) delete process.env.PI_JOBS_DIR;
 		else process.env.PI_JOBS_DIR = previousRoot;
+		if (previousOutputRoot === undefined) delete process.env.PI_JOBS_OUTPUT_DIR;
+		else process.env.PI_JOBS_OUTPUT_DIR = previousOutputRoot;
 		await rm(root, { recursive: true, force: true });
 	});
 	await harness.start("startup");

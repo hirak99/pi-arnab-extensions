@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
+
+import { BoundedOutput, temporaryOutputRoot } from "pi-output-store";
 
 import { JobStore, jobsDirectory } from "./store.ts";
 import type { JobStatus, JobTask } from "./types.ts";
@@ -10,7 +11,7 @@ export type DeliverJob = (task: JobTask) => void;
 interface JobEntry {
 	task: JobTask;
 	child: ChildProcess | null;
-	log: WriteStream | null;
+	log: BoundedOutput | null;
 	timeout: NodeJS.Timeout | null;
 	killTimer: NodeJS.Timeout | null;
 	done: Promise<void>;
@@ -55,7 +56,9 @@ function newEntry(task: JobTask, historical = false): JobEntry {
 
 export class JobSupervisor {
 	readonly root: string;
+	readonly outputRoot: string;
 	private readonly killGraceMs: number;
+	private readonly maxSegmentBytes: number | undefined;
 	private store: JobStore | undefined;
 	private sessionId: string | undefined;
 	private deliver: DeliverJob | undefined;
@@ -69,8 +72,12 @@ export class JobSupervisor {
 		onStateChange?: () => void,
 		onError?: (error: Error) => void,
 		killGraceMs = 2_000,
+		outputRoot = temporaryOutputRoot("background-jobs"),
+		maxSegmentBytes?: number,
 	) {
 		this.root = root;
+		this.outputRoot = outputRoot;
+		this.maxSegmentBytes = maxSegmentBytes;
 		this.killGraceMs = killGraceMs;
 		this.deliver = deliver;
 		this.onStateChange = onStateChange;
@@ -79,7 +86,7 @@ export class JobSupervisor {
 
 	async restore(sessionId: string): Promise<void> {
 		this.sessionId = sessionId;
-		this.store = new JobStore(jobsDirectory(this.root, sessionId));
+		this.store = new JobStore(jobsDirectory(this.root, sessionId), jobsDirectory(this.outputRoot, sessionId));
 		await this.store.prepare();
 		const tasks = await this.store.restore(sessionId);
 		this.entries.clear();
@@ -124,6 +131,7 @@ export class JobSupervisor {
 	async readLogs(idOrPrefix: string, sessionId: string, tail: boolean, maxBytes?: number) {
 		if (!this.store) throw new Error("job session is not initialized");
 		const entry = this.resolve(idOrPrefix, sessionId);
+		await entry.log?.flush();
 		return this.store.readLogs(entry.task, tail, maxBytes);
 	}
 
@@ -170,6 +178,7 @@ export class JobSupervisor {
 
 	private async removeEntry(entry: JobEntry): Promise<void> {
 		if (!this.store) throw new Error("job session is not initialized");
+		await entry.log?.close();
 		await this.store.remove(entry.task);
 		this.entries.delete(entry.task.id);
 	}
@@ -220,14 +229,10 @@ export class JobSupervisor {
 		}
 		this.onStateChange?.();
 
-		entry.log = createWriteStream(task.output_path, { flags: "a", mode: 0o600 });
-		entry.log.on("error", (error) => {
-			entry.requestedStatus = "failed";
-			entry.terminationError = `Output log failed: ${error.message}`;
-			this.signal(entry, "SIGTERM");
-		});
+		entry.log = new BoundedOutput(task.output_path, this.maxSegmentBytes === undefined ? {} : { maxSegmentBytes: this.maxSegmentBytes });
 		let child: ChildProcess;
 		try {
+			await entry.log.open();
 			child = spawn("/bin/bash", ["-c", input.command], {
 				cwd: input.cwd,
 				env: process.env,
@@ -242,8 +247,22 @@ export class JobSupervisor {
 		entry.child = child;
 		task.pid = child.pid ?? null;
 		this.persist(entry);
-		child.stdout?.pipe(entry.log, { end: false });
-		child.stderr?.pipe(entry.log, { end: false });
+		const captureOutput = (stream: ChildProcess["stdout"]): void => {
+			if (!stream) return;
+			stream.on("data", (chunk: Buffer | string) => {
+				stream.pause();
+				void entry.log!.append(chunk)
+					.catch((error: Error) => {
+						if (entry.finished) return;
+						entry.requestedStatus = "failed";
+						entry.terminationError = `Output log failed: ${error.message}`;
+						this.signal(entry, "SIGTERM");
+					})
+					.finally(() => { stream.resume(); });
+			});
+		};
+		captureOutput(child.stdout);
+		captureOutput(child.stderr);
 		child.once("error", (error) => {
 			entry.requestedStatus = "failed";
 			entry.terminationError = error.message;
@@ -327,9 +346,7 @@ export class JobSupervisor {
 		entry.task.deadline_at = null;
 		entry.seen = false;
 		try {
-			if (entry.log) {
-				await new Promise<void>((resolve) => entry.log!.end(resolve));
-			}
+			if (entry.log) await entry.log.close();
 			await entry.saveChain;
 			await this.store?.save(entry.task);
 		} catch (error) {

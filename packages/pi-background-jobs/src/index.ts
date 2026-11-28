@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { sendNativeNotification } from "pi-durable-inbox";
+import { temporaryOutputRoot } from "pi-output-store";
 import { Type } from "typebox";
 
 import { formatJobList, formatJobsStatus, jobNotificationText } from "./format.ts";
@@ -61,6 +62,7 @@ function jobStatusSummary(task: JobTask) {
 
 export default function backgroundJobsExtension(pi: ExtensionAPI) {
 	const root = process.env.PI_JOBS_DIR ?? join(process.cwd(), ".pi", "jobs");
+	const outputRoot = process.env.PI_JOBS_OUTPUT_DIR ?? temporaryOutputRoot("background-jobs");
 	let sessionId: string | undefined;
 	let statusUi: ExtensionContext["ui"] | undefined;
 	let loadConflict: string | null = null;
@@ -83,7 +85,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 	const onError = (error: Error): void => {
 		statusUi?.notify(`Background job error: ${error.message}`, "error");
 	};
-	let supervisor = new JobSupervisor(root, deliver, onStateChange, onError);
+	let supervisor = new JobSupervisor(root, deliver, onStateChange, onError, 2_000, outputRoot);
 
 	function owningSessionId(): string {
 		if (!sessionId) throw new Error("job session is not initialized");
@@ -183,12 +185,13 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "job_run",
 		label: "Run background job",
-		description: "Start a named long-running shell command as a background job and return immediately with a task ID and output path. Every job survives /reload with the same PID, streams, and absolute timeout. Full Pi shutdown stops running jobs; restart retains history but never relaunches them. Completion automatically sends a native notification and follow-up turn.",
+		description: "Start a named long-running shell command as a background job and return immediately with a task ID and temporary output path. Every job survives /reload with the same PID, streams, and absolute timeout. Output is privately stored under the OS temporary directory and bounded by two-segment byte rotation. Full Pi shutdown stops running jobs; restart retains history but never relaunches them. Completion automatically sends a native notification and follow-up turn.",
 		promptSnippet: "Start a background shell job that survives /reload and notifies on completion",
 		promptGuidelines: [
 			"Use job_run instead of bash for commands expected to run for a long time, such as test suites, dev servers, watchers, or builds.",
 			"job_run returns immediately. Do not sleep or repeatedly call job_status/job_logs merely to wait; the terminal notification starts a follow-up turn.",
 			"Use job_status for deliberate inspection and job_logs only when output is needed. Use job_kill when the user asks to stop a job or it is no longer needed.",
+			"Output is temporary and retains only the current and previous bounded segments. Copy it to an explicit permanent path before job_clear or system temporary-directory cleanup if it must be preserved.",
 		],
 		parameters: Type.Object({
 			name: Type.String({ description: "Short human-readable job name for the footer and notifications" }),
@@ -228,7 +231,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "job_logs",
 		label: "Background job logs",
-		description: "Read bounded output from a background job owned by this session. Output is capped at 50 KB for model safety and includes the full output path when truncated.",
+		description: "Read bounded recent output from a background job owned by this session. Reads are capped at 50 KB and span the current and previous temporary output segments. The result includes omitted_lines only when rotation has physically discarded older output.",
 		promptSnippet: "Read bounded background-job output when needed",
 		parameters: Type.Object({
 			taskId: Type.String({ description: "Exact job ID or unique prefix" }),
@@ -238,7 +241,10 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			guardConflicts();
 			const logs = await supervisor.readLogs(params.taskId, owningSessionId(), params.tail ?? true, params.maxBytes);
-			const prefix = logs.truncated ? `Showing ${logs.tail ? "last" : "first"} ${logs.bytesRead} bytes. Full output: ${logs.path}\n\n` : "";
+			const notices: string[] = [];
+			if (logs.omitted_lines) notices.push(`${logs.omitted_lines} earlier lines omitted by output rotation.`);
+			if (logs.truncated) notices.push(`Showing ${logs.tail ? "last" : "first"} ${logs.bytesRead} retained bytes from ${logs.path} and its previous segment when present.`);
+			const prefix = notices.length ? `${notices.join("\n")}\n\n` : "";
 			return {
 				content: [{ type: "text" as const, text: prefix + logs.text }],
 				details: logs,
@@ -264,7 +270,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "job_clear",
 		label: "Clear finished background jobs",
-		description: "Permanently delete metadata and output logs for one finished job, or every finished job owned by this session. Running jobs are never deleted. Provide exactly one of taskId or allFinished:true.",
+		description: "Permanently delete metadata and all temporary output segments for one finished job, or every finished job owned by this session. Output deletion includes rotated segments and omitted-line accounting. Running jobs are never deleted. Provide exactly one of taskId or allFinished:true.",
 		promptSnippet: "Permanently clear finished background-job records and logs",
 		promptGuidelines: [
 			"Clear jobs only when their output is no longer needed; deletion is permanent.",

@@ -1,15 +1,18 @@
-import { mkdir, open, readdir, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { readJson, writeJsonAtomic } from "pi-durable-inbox";
+import { deleteOutput, readOutput } from "pi-output-store";
 
 import { DEFAULT_LOG_BYTES, MAX_LOG_BYTES, type JobLogs, type JobTask } from "./types.ts";
 
 export class JobStore {
 	readonly root: string;
+	readonly outputRoot: string;
 
-	constructor(root: string) {
+	constructor(root: string, outputRoot = root) {
 		this.root = root;
+		this.outputRoot = outputRoot;
 	}
 
 	private metadataPath(id: string): string {
@@ -17,11 +20,12 @@ export class JobStore {
 	}
 
 	outputPath(id: string): string {
-		return join(this.root, `${id}.output`);
+		return join(this.outputRoot, `${id}.output`);
 	}
 
 	async prepare(): Promise<void> {
 		await mkdir(this.root, { recursive: true, mode: 0o700 });
+		await mkdir(this.outputRoot, { recursive: true, mode: 0o700 });
 	}
 
 	async save(task: JobTask): Promise<void> {
@@ -59,43 +63,26 @@ export class JobStore {
 		if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_LOG_BYTES) {
 			throw new Error(`maxBytes must be an integer from 1 to ${MAX_LOG_BYTES}`);
 		}
-		let size: number;
-		try {
-			size = (await stat(task.output_path)).size;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				return { task, text: "", path: task.output_path, tail, bytesRead: 0, truncated: false };
-			}
-			throw error;
-		}
-		const length = Math.min(size, maxBytes);
-		const start = tail ? size - length : 0;
-		const handle = await open(task.output_path, "r");
-		try {
-			const buffer = Buffer.alloc(length);
-			await handle.read(buffer, 0, length, start);
-			return {
-				task,
-				text: buffer.toString("utf8"),
-				path: task.output_path,
-				tail,
-				bytesRead: length,
-				truncated: size > length,
-			};
-		} finally {
-			await handle.close();
-		}
+		const result = await readOutput(task.output_path, { maxBytes, tail });
+		return {
+			task,
+			text: result.text,
+			path: result.path,
+			tail,
+			bytesRead: result.bytesRead,
+			truncated: result.truncated,
+			...(result.omittedLines > 0 ? { omitted_lines: result.omittedLines } : {}),
+		};
 	}
 
 	async remove(task: JobTask): Promise<void> {
 		// Remove output first and metadata last, so a failed output deletion does
 		// not erase the record needed to inspect or retry the cleanup.
-		for (const path of [task.output_path, this.metadataPath(task.id)]) {
-			try {
-				await unlink(path);
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			}
+		await deleteOutput(task.output_path);
+		try {
+			await unlink(this.metadataPath(task.id));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
 

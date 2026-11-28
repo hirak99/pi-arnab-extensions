@@ -1,7 +1,8 @@
 # pi-background-jobs
 
-Focused background shell jobs for Pi. Five tools, durable output, automatic
-completion notifications, a session footer, and no agent/provider subsystems.
+Focused background shell jobs for Pi. Five tools, temporary bounded output,
+automatic completion notifications, a session footer, and no agent/provider
+subsystems.
 
 **Related project:** I’ve used [`pi-background-tasks`](https://pi.dev/packages/pi-background-tasks), and it manages background tasks very well—do take a look, especially if you also need delegated agents, Fusion workflows, attested runs, or Anthropic attribution. This smaller package simply reflects my own preferences: [`pi-subagents`](https://github.com/tintinweb/pi-subagents) already handles agents, I only need run/status/logs/kill/clear here, and every job survives `/reload` by default.
 
@@ -15,7 +16,9 @@ completion notifications, a session footer, and no agent/provider subsystems.
 - Full Pi shutdown stops running jobs; restart preserves history but never
   relaunches commands or adopts persisted PIDs
 - POSIX process groups let timeout and kill terminate the whole process tree
-- Combined stdout/stderr logs with bounded 50 KB tool reads
+- Combined stdout/stderr recent output with bounded 50 KB tool reads
+- Per-user private temporary storage and two-segment byte rotation; jobs never
+  fail merely because their output grows
 - Session-scoped status, logs, and lifecycle operations
 - Native completion notifications with Discord Remote support
 
@@ -74,9 +77,24 @@ jobs remain. Set `NO_COLOR` to disable ANSI styling.
 
 ## Lifecycle and storage
 
-Runtime data is stored under `.pi/jobs/<session-id>/` in the launch directory.
-Set `PI_JOBS_DIR` to use a different parent directory. Each job has a JSON
-metadata file and an `.output` log.
+Runtime metadata is stored under `.pi/jobs/<session-id>/` in the launch
+directory. Set `PI_JOBS_DIR` to use a different metadata parent. Output is stored
+under `${os.tmpdir()}/pi-<username>/background-jobs/<session-id>/`; the private
+per-user root is mode `0700` and output files are mode `0600`. Set
+`PI_JOBS_OUTPUT_DIR` only when an explicit alternate output parent is needed.
+
+Each job has JSON metadata plus a fixed `.output` path and at most one `.output.1`
+rotated segment. Each segment is bounded to 10 MiB. Rotation keeps recent output
+without failing or truncating the job itself. A small temporary state file
+tracks cumulative omitted lines; `job_logs` reports `omitted_lines` only when
+older output has actually been discarded. Tool reads remain capped at 50 KB and
+span both retained segments.
+
+Temporary output may disappear during external temporary-directory cleanup or
+reboot. Cold restore and log reads tolerate missing files. Copy output to an
+explicit permanent location if it must outlive the job or temporary storage.
+Ending, failing, or killing a job retains its recent output; only `job_clear`,
+`/jobs clear`, external temporary cleanup, or explicit deletion removes it.
 
 Pi's extension loader replaces modules during `/reload`. This extension leaves
 its supervisor at `Symbol.for("pi-background-jobs.supervisor")` on `globalThis`;

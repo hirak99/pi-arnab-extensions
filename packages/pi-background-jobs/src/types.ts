@@ -24,6 +24,7 @@ export interface JobLogs {
 	tail: boolean;
 	bytesRead: number;
 	truncated: boolean;
+	omitted_lines?: number;
 }
 
 export const DEFAULT_LOG_BYTES = 50_000;

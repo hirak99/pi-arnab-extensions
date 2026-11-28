@@ -9,13 +9,13 @@ import { formatJobsStatus, jobNotificationText } from "../src/format.ts";
 import { JobSupervisor } from "../src/supervisor.ts";
 import type { JobTask } from "../src/types.ts";
 
-async function fixture(t: test.TestContext, sessionId = "job-test-session") {
+async function fixture(t: test.TestContext, sessionId = "job-test-session", maxSegmentBytes?: number) {
 	const root = await mkdtemp(join(tmpdir(), "pi-background-jobs-"));
 	const delivered: JobTask[] = [];
 	const errors: Error[] = [];
 	const deliver = (task: JobTask) => { delivered.push(task); };
 	const onError = (error: Error) => { errors.push(error); };
-	const supervisor = new JobSupervisor(root, deliver, () => {}, onError, 25);
+	const supervisor = new JobSupervisor(root, deliver, () => {}, onError, 25, join(root, "output"), maxSegmentBytes);
 	await supervisor.restore(sessionId);
 	t.after(async () => {
 		await supervisor.shutdown();
@@ -144,7 +144,7 @@ test("full shutdown kills jobs and cold restore retains history without relaunch
 	assert.equal(delivered.length, 0, "shutdown does not wake a disposed session");
 
 	const restoredDelivered: JobTask[] = [];
-	const restored = new JobSupervisor(root, (task) => restoredDelivered.push(task));
+	const restored = new JobSupervisor(root, (task) => restoredDelivered.push(task), undefined, undefined, 2_000, join(root, "output"));
 	await restored.restore(sessionId);
 	t.after(() => restored.shutdown());
 	assert.equal(restored.resolve(started.id, sessionId).task.status, "killed");
@@ -154,7 +154,7 @@ test("full shutdown kills jobs and cold restore retains history without relaunch
 
 test("session isolation and bounded log reads are enforced", async (t) => {
 	const { root, supervisor, sessionId } = await fixture(t);
-	const other = new JobSupervisor(root);
+	const other = new JobSupervisor(root, undefined, undefined, undefined, 2_000, join(root, "output"));
 	await other.restore("other-session");
 	t.after(() => other.shutdown());
 	const started = await supervisor.start(sessionId, {
@@ -171,7 +171,32 @@ test("session isolation and bounded log reads are enforced", async (t) => {
 	assert.equal(tail.truncated, true);
 	const head = await supervisor.readLogs(started.id, sessionId, false, 4);
 	assert.equal(head.text, "0123");
+	assert.equal(head.omitted_lines, undefined);
+	await rm(started.output_path, { force: true });
+	const missing = await supervisor.readLogs(started.id, sessionId, true, 4);
+	assert.equal(missing.text, "");
+	assert.equal(missing.truncated, false);
 	await assert.rejects(() => supervisor.readLogs(started.id, sessionId, true, 50_001), /maxBytes/);
+});
+
+test("job output rotates without failing and clear removes every segment", async (t) => {
+	const { supervisor, delivered, sessionId } = await fixture(t, "job-rotation-session", 16);
+	const started = await supervisor.start(sessionId, {
+		name: "Bounded output",
+		command: "for i in $(seq 1 20); do printf '%s\\n' \"$i\"; done",
+		cwd: "/tmp",
+	});
+	await supervisor.resolve(started.id, sessionId).done;
+	assert.equal(delivered[0]?.status, "completed");
+	assert.ok((await stat(started.output_path)).size <= 16);
+	assert.ok((await stat(`${started.output_path}.1`)).size <= 16);
+	const logs = await supervisor.readLogs(started.id, sessionId, true);
+	assert.ok((logs.omitted_lines ?? 0) > 0);
+	assert.doesNotMatch(logs.text, /(?:^|\n)1\n/);
+	await supervisor.clear(started.id, sessionId);
+	for (const path of [started.output_path, `${started.output_path}.1`, `${started.output_path}.state.json`]) {
+		await assert.rejects(() => stat(path), { code: "ENOENT" });
+	}
 });
 
 test("clearFinished permanently removes terminal records and leaves running jobs untouched", async (t) => {
