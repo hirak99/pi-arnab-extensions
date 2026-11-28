@@ -44,6 +44,13 @@ export interface RegistrationInput {
 	transport: TeamTransport;
 }
 
+export interface AgentUpdateInput {
+	name?: string | undefined;
+	duties?: string | undefined;
+	/** Full replacement membership list when supplied; omitted teams are preserved. */
+	teams?: string[] | undefined;
+}
+
 export interface StoredSessionIdentity {
 	agent_id: string;
 }

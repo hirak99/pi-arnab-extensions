@@ -296,6 +296,28 @@ export default function teamExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "team_update",
+		label: "Update team registration",
+		description: "Update this agent's own name, duties, or team memberships without re-registering. At least one property is required; omitted properties are preserved. Teams are a full replacement list: omit teams to preserve memberships or use [] to clear them. Identity and instance IDs remain unchanged.",
+		promptSnippet: "Update this agent's name, duties, or team memberships",
+		executionMode: "sequential",
+		parameters: Type.Object({
+			name: Type.Optional(Type.String({ description: "New human-friendly agent name" })),
+			duties: Type.Optional(Type.String({ description: "New responsibilities text" })),
+			teams: Type.Optional(Type.Array(Type.String({ description: "Team slug: lowercase letters, digits, underscores, and hyphens" }), {
+				description: "Full replacement membership list; omit to preserve memberships, use [] to clear memberships",
+			})),
+		}),
+		async execute(_toolCallId, params) {
+			await store.updateAgent(requireSelf(), params);
+			return {
+				content: [{ type: "text" as const, text: "Team registration updated." }],
+				details: { updated: true },
+			};
+		},
+	});
+
+	pi.registerTool({
 		name: "team_get_self_uuid",
 		label: "Get team UUID",
 		description: "Return this registered team agent's persistent UUID.",

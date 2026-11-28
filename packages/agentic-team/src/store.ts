@@ -11,6 +11,7 @@ import {
 
 import type {
 	AgentRegistration,
+	AgentUpdateInput,
 	ReadMessageOptions,
 	ReadReceipt,
 	RegistrationInput,
@@ -176,6 +177,35 @@ export class TeamStore {
 			};
 			await writeJsonAtomic(path, updated);
 			return true;
+		});
+	}
+
+	async updateAgent(agentId: string, input: AgentUpdateInput): Promise<AgentRegistration> {
+		if (input.name === undefined && input.duties === undefined && input.teams === undefined) {
+			throw new Error("at least one of name, duties, or teams must be provided");
+		}
+		const name = input.name === undefined ? undefined : requireText(input.name, "name", 80);
+		const duties = input.duties === undefined ? undefined : requireText(input.duties, "duties", 20_000);
+		const teams = input.teams === undefined ? undefined : normalizeTeamNames(input.teams);
+		const path = this.agentPath(agentId);
+		return withLock(path, async () => {
+			const current = await readJson<AgentRegistration>(path);
+			if (current.status === "deleted") throw new Error("deleted agents cannot be updated");
+			const now = new Date().toISOString();
+			const responsibilitiesChanged = duties !== undefined && duties !== current.duties;
+			const updated: AgentRegistration = {
+				...current,
+				name: name ?? current.name,
+				duties: duties ?? current.duties,
+				teams: teams ?? (current.teams ?? []),
+				last_seen_at: now,
+				responsibilities_revision: (current.responsibilities_revision ?? 1) + (responsibilitiesChanged ? 1 : 0),
+				responsibilities_updated_at: responsibilitiesChanged
+					? now
+					: (current.responsibilities_updated_at ?? current.registered_at),
+			};
+			await writeJsonAtomic(path, updated);
+			return updated;
 		});
 	}
 

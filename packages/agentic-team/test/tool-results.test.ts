@@ -50,6 +50,26 @@ test("team mutation and identity tools return focused payloads", async (t) => {
 	assert.equal(typeof registered.details.agent_id, "string");
 
 	const store = new TeamStore(root);
+	const beforeUpdate = await store.getAgent(registered.details.agent_id);
+	const updated = await tools.get("team_update").execute("update", {
+		teams: ["extensions", "test", "extensions"],
+	});
+	assert.deepEqual(updated.content, [{ type: "text", text: "Team registration updated." }]);
+	assert.deepEqual(updated.details, { updated: true });
+	const afterUpdate = await store.getAgent(registered.details.agent_id);
+	assert.deepEqual(afterUpdate.teams, ["extensions", "test"]);
+	assert.equal(afterUpdate.name, beforeUpdate.name);
+	assert.equal(afterUpdate.duties, beforeUpdate.duties);
+	assert.equal(afterUpdate.instance_id, beforeUpdate.instance_id);
+	assert.equal(afterUpdate.responsibilities_revision, beforeUpdate.responsibilities_revision);
+	await assert.rejects(() => tools.get("team_update").execute("empty-update", {}), /at least one/);
+	const updatedDuties = await tools.get("team_update").execute("update-duties", {
+		duties: "Updated focused tool results",
+	});
+	assert.deepEqual(updatedDuties.content, [{ type: "text", text: "Team registration updated." }]);
+	assert.equal((await store.getAgent(registered.details.agent_id)).responsibilities_revision,
+		beforeUpdate.responsibilities_revision + 1);
+
 	const other = await store.register({
 		duties: "Other test agent",
 		name: "Other",
@@ -72,6 +92,8 @@ test("team mutation and identity tools return focused payloads", async (t) => {
 		"teams",
 	].sort());
 	assert.equal(self.details.agent_id, registered.details.agent_id);
+	assert.deepEqual(self.details.teams, ["extensions", "test"]);
+	assert.equal(self.details.duties, "Updated focused tool results");
 	assert.equal(self.details.session_id, undefined);
 	assert.equal(self.details.cwd, undefined);
 	assert.equal(self.details.pid, undefined);

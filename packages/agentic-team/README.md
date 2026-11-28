@@ -84,6 +84,25 @@ optional: omitting it leaves a new agent unassigned and preserves existing
 memberships during re-registration. Passing an explicit list replaces all
 memberships, and `teams=[]` clears them.
 
+## Update the current registration
+
+Agents can change their own profile without re-registering or resubmitting
+unchanged properties:
+
+```text
+team_update(name="new-name")
+team_update(duties="Maintain extensions and review releases")
+team_update(teams=["dev", "ops"])
+team_update(teams=[])  # leave all teams
+```
+
+At least one property is required. Omitted properties are preserved, while an
+explicit `teams` list replaces the complete membership list after validation,
+deduplication, and sorting. Updates preserve the agent and instance UUIDs and
+registration history. The responsibilities revision changes only when the
+duties text actually changes. The tool returns `Team registration updated.`;
+use `team_get_self()` for the resulting focused registration summary.
+
 ## Update current responsibilities
 
 ```text
@@ -104,6 +123,7 @@ Without a tmux pane, liveness relies on the registered process ID.
 | Tool | Purpose |
 | --- | --- |
 | `team_register` | Register or reactivate the current session; optionally replace team memberships |
+| `team_update` | Partially update this agent's name, duties, or full replacement team list without changing identity |
 | `team_get_self_uuid` | Return this agent's persistent team UUID |
 | `team_get_self` | Return focused identity, role, instance, and liveness information |
 | `team_list_agents` | Discover agents through focused role/team/liveness summaries; optionally include inactive/archived entries |
