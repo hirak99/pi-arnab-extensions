@@ -188,3 +188,41 @@ test("reload preserves removed-watch sender identity and awaits durable notifica
 	const [receipt] = await outbox.readInbox(SESSION, { messageId: pending.metadata.id });
 	assert.equal(receipt?.read_at !== null, true);
 });
+
+test("watch_export returns only export metadata and survives watch removal", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-watch-export-tool-"));
+	const previousRoot = process.env.PI_WATCH_DIR;
+	const previousLogRoot = process.env.PI_WATCH_LOG_DIR;
+	process.env.PI_WATCH_DIR = root;
+	process.env.PI_WATCH_LOG_DIR = join(root, "logs");
+	const harness = createHarness();
+	t.after(async () => {
+		await harness.shutdown("quit").catch(() => undefined);
+		if (previousRoot === undefined) delete process.env.PI_WATCH_DIR;
+		else process.env.PI_WATCH_DIR = previousRoot;
+		if (previousLogRoot === undefined) delete process.env.PI_WATCH_LOG_DIR;
+		else process.env.PI_WATCH_LOG_DIR = previousLogRoot;
+		await rm(root, { recursive: true, force: true });
+	});
+	await harness.start("startup");
+	await harness.call("watch_create_stream", {
+		name: "export-tool",
+		run: "for i in $(seq 1 75); do echo line-$i; done; exit 0",
+	});
+	await waitFor(async () => {
+		const inspected = await harness.call("watch_inspect", { name: "export-tool" });
+		return inspected.details.state.status === "stopped";
+	}, "export-tool completion");
+	const tail = await harness.call("watch_tail", { name: "export-tool", lines: 2 });
+	assert.equal(tail.details.path, undefined);
+	assert.doesNotMatch(JSON.stringify(tail), /\.log|pi-watch-export-tool-/);
+	const destination = join(root, "permanent", "watch.log");
+	const exported = await harness.call("watch_export", { name: "export-tool", path: destination });
+	assert.deepEqual(Object.keys(exported.details), ["bytes_written"]);
+	const saved = await readFile(destination, "utf8");
+	assert.equal(exported.details.bytes_written, Buffer.byteLength(saved));
+	assert.match(saved, /\[stdout\]: line-75/);
+	assert.equal(saved.split("\n").filter((line) => line.startsWith("[stdout]: line-")).length, 75);
+	await harness.call("watch_remove", { name: "export-tool" });
+	assert.match(await readFile(destination, "utf8"), /\[stdout\]: line-75/);
+});

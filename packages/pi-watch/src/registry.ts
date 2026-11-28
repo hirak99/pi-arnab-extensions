@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/pro
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
-import { BoundedOutput, deleteOutput, readOutputLines } from "pi-output-store";
+import { BoundedOutput, deleteOutput, exportOutput, outputExists, readOutputLines } from "pi-output-store";
 
 import type { WatchDefinition, WatchRuntimeState } from "./types.ts";
 
@@ -129,10 +129,14 @@ export class WatchRegistry {
 
 	async readLog(id: string, maxLines: number) {
 		await this.writers.get(id)?.flush();
-		const result = await readOutputLines(this.logPath(id), maxLines);
-		if (result.lines.length > 0) return result;
-		const legacy = await readOutputLines(this.legacyLogPath(id), maxLines);
-		return legacy.lines.length > 0 ? legacy : result;
+		if (await outputExists(this.logPath(id))) return readOutputLines(this.logPath(id), maxLines);
+		return readOutputLines(this.legacyLogPath(id), maxLines);
+	}
+
+	async exportLog(id: string, destination: string, overwrite: boolean) {
+		await this.writers.get(id)?.flush();
+		const source = await outputExists(this.logPath(id)) ? this.logPath(id) : this.legacyLogPath(id);
+		return exportOutput(source, destination, { overwrite });
 	}
 
 	async readLogTail(id: string, maxLines: number): Promise<string[]> {

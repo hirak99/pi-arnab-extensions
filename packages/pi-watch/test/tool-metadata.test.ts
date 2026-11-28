@@ -20,6 +20,7 @@ test("every registered watch tool appears in Pi's prompt tool summary", () => {
 		[
 			"watch_create_poll",
 			"watch_create_stream",
+			"watch_export",
 			"watch_inspect",
 			"watch_list",
 			"watch_pause",

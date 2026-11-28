@@ -35,6 +35,9 @@ rather than receiving a redundant definition echo.
   ("script is still running", "script exited with code N", "watch is paused",
   restart scheduling). If rotation discarded older output, the result also
   reports `omitted_lines`.
+- `watch_export(name, path, overwrite=false)` — atomically save every retained
+  output byte to an explicit permanent destination without the `watch_tail`
+  line cap. Raw output paths are internal and are not exposed by watch tools.
 
 Semantics:
 
@@ -90,19 +93,29 @@ Definitions, runtime state, notification outbox, and `$WATCH_STATE` remain under
 explicit alternate output directory is needed. The per-user root is private
 (`0700`) and output files are `0600`.
 
-Each watch has a fixed `.log` path and at most one `.log.1` rotated segment.
+Each watch has an internal fixed `.log` path and at most one `.log.1` rotated
+segment.
 Segments rotate at 10 MiB without killing or pausing the watch beyond normal
 write backpressure. A small temporary state file tracks cumulative omitted
 lines. `watch_tail` reads across both retained segments and includes
 `omitted_lines` only when physical rotation discarded older output.
 
+`watch_export` snapshots both retained segments in chronological order, without
+the `watch_tail` line cap. Relative destinations resolve against the session
+working directory. Export writes a temporary sibling and atomically publishes
+it, refusing existing destinations unless `overwrite:true` is explicit. Running
+watches produce point-in-time snapshots. The result reports `bytes_written` and,
+when applicable, `omitted_lines`; it never exposes internal source paths.
+Exported files are independent and survive watch removal.
+
 Ending, pausing, or breaking a watch does not delete output. `watch_remove` and
 automatic `max_events` removal delete the current segment, rotated segment, and
 accounting file; `$WATCH_STATE` is retained. Existing legacy `.pi/pi-watch/logs`
 files remain readable until new output is written, and are also deleted when
-their watch is removed. Temporary output can disappear during reboot or external
-temporary-directory cleanup, so copy it to an explicit permanent path when
-needed beyond the watch lifecycle.
+their watch is removed. Export before `watch_remove` or automatic `max_events`
+removal when output must be preserved. Temporary output can disappear during
+reboot or external temporary-directory cleanup, so use `watch_export` for an
+explicit permanent copy; never copy only the current internal segment.
 
 ## Process durability design
 

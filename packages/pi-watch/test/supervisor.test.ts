@@ -47,11 +47,17 @@ test("legacy watch logs remain readable and are removed with the watch", async (
 	await mkdir(join(root, "logs"), { recursive: true });
 	await writeFile(join(root, "logs", "legacy.log"), "old output\n", { mode: 0o600 });
 	assert.deepEqual((await registry.readLog("legacy", 10)).lines, ["old output"]);
+	const destination = join(root, "exported.log");
+	assert.deepEqual(await registry.exportLog("legacy", destination, false), { bytesWritten: 11, omittedLines: 0 });
+	assert.equal(await readFile(destination, "utf8"), "old output\n");
 	await registry.appendLog("legacy", "new output");
 	assert.deepEqual((await registry.readLog("legacy", 10)).lines, ["new output"]);
+	assert.deepEqual(await registry.exportLog("legacy", destination, true), { bytesWritten: 11, omittedLines: 0 });
+	assert.equal(await readFile(destination, "utf8"), "new output\n");
 	await registry.remove("legacy");
 	await assert.rejects(() => stat(join(root, "logs", "legacy.log")), { code: "ENOENT" });
 	await assert.rejects(() => stat(registry.logPath("legacy")), { code: "ENOENT" });
+	assert.equal(await readFile(destination, "utf8"), "new output\n");
 });
 
 test("poll: exit 1 with output delivers one notification; exit 0 stays silent", async (t) => {
@@ -249,6 +255,25 @@ test("stream: max_events counts source events and flushes a coalesced final batc
 	assert.doesNotMatch(events[0]!, /event 4|watch_tail/);
 });
 
+test("running watch export is a point-in-time snapshot and can be refreshed", async (t) => {
+	const { supervisor, root } = await withSupervisor(t);
+	await supervisor.create({
+		name: "running-export",
+		mode: "stream",
+		run: "echo before; sleep 0.2; echo after; exit 0",
+		sessionId: SESSION,
+	});
+	await waitFor(async () => (await supervisor.tail("running-export", SESSION, 10)).includes("[stdout]: before"), "initial running output");
+	const destination = join(root, "running.log");
+	const snapshot = await supervisor.exportOutput("running-export", SESSION, destination, false);
+	const expected = "[status]: created (stream mode)\n[stdout]: before\n";
+	assert.equal(snapshot.bytesWritten, Buffer.byteLength(expected));
+	assert.equal(await readFile(destination, "utf8"), expected);
+	await waitFor(() => supervisor.get("running-export", SESSION).state.status === "stopped", "running export completion");
+	await supervisor.exportOutput("running-export", SESSION, destination, true);
+	assert.match(await readFile(destination, "utf8"), /\[stdout\]: after/);
+});
+
 test("watch output rotates without stopping and removal deletes every segment", async (t) => {
 	const { supervisor, root } = await withSupervisor(t, {}, 16);
 	const definition = await supervisor.create({
@@ -264,7 +289,15 @@ test("watch output rotates without stopping and removal deletes every segment", 
 	const result = await supervisor.tailDetails("bounded-output", SESSION, 100);
 	assert.ok(result.omittedLines > 0);
 	assert.equal(result.lines.some((line) => line === "[stdout]: 1"), false);
+	const destination = join(root, "retained.log");
+	const exported = await supervisor.exportOutput("bounded-output", SESSION, destination, false);
+	assert.equal(exported.omittedLines, result.omittedLines);
+	assert.equal(
+		await readFile(destination, "utf8"),
+		await readFile(`${registry.logPath(definition.id)}.1`, "utf8") + await readFile(registry.logPath(definition.id), "utf8"),
+	);
 	await supervisor.remove("bounded-output", SESSION);
+	await stat(destination);
 	for (const path of [registry.logPath(definition.id), `${registry.logPath(definition.id)}.1`, `${registry.logPath(definition.id)}.state.json`]) {
 		await assert.rejects(() => stat(path), { code: "ENOENT" });
 	}

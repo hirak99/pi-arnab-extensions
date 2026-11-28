@@ -263,6 +263,11 @@ export class WatchSupervisor {
 		return this.registry.readLog(entry.definition.id, maxLines);
 	}
 
+	async exportOutput(name: string, sessionId: string, destination: string, overwrite: boolean) {
+		const entry = this.byName(name, sessionId);
+		return this.registry.exportLog(entry.definition.id, destination, overwrite);
+	}
+
 	async tail(name: string, sessionId: string, maxLines: number): Promise<string[]> {
 		const entry = this.byName(name, sessionId);
 		return this.registry.readLogTail(entry.definition.id, maxLines);

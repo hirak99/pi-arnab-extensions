@@ -339,6 +339,21 @@ export function readOutput(path: string, options: { maxBytes?: number; tail?: bo
 	return serialize(path, () => readOutputNow(path, options));
 }
 
+/** Whether any current, rotated, or accounting artifact belongs to this output. */
+export function outputExists(path: string): Promise<boolean> {
+	return serialize(path, async () => {
+		for (const candidate of [path, rotatedPath(path), statePath(path)]) {
+			try {
+				await lstat(candidate);
+				return true;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		}
+		return false;
+	});
+}
+
 export async function readOutputLines(path: string, maxLines = 50): Promise<OutputLinesRead> {
 	if (!Number.isSafeInteger(maxLines) || maxLines < 1) throw new Error("maxLines must be a positive integer");
 	const result = await readOutput(path, { maxBytes: DEFAULT_OUTPUT_SEGMENT_BYTES * 2, tail: true });

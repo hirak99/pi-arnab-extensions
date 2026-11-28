@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -29,6 +29,7 @@ const TOOL_NAMES = [
 	"watch_resume",
 	"watch_remove",
 	"watch_tail",
+	"watch_export",
 ] as const;
 
 const WATCH_NOTIFICATION_TYPE = "watch-notification";
@@ -460,6 +461,35 @@ export default function watchExtension(pi: ExtensionAPI) {
 				return toolResult({
 					lines: result.lines,
 					status: statusLine(state),
+					...(result.omittedLines > 0 ? { omitted_lines: result.omittedLines } : {}),
+				});
+			} catch (error) {
+				toWatchError(error);
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "watch_export",
+		label: "Export watch output",
+		description: "Atomically save a consistent point-in-time snapshot of all retained watch output to an explicit destination. Exports both retained segments in chronological order and is not limited by the watch_tail line cap. Existing destinations are refused unless overwrite is true. Exported files survive watch removal. Automatic max_events removal still deletes internal output, so export before removal when preservation is required.",
+		promptSnippet: "Save all retained watch output to a permanent file",
+		promptGuidelines: [
+			"Use watch_export only when retained output must be saved permanently; use watch_tail for ordinary bounded inspection.",
+			"For a running watch, the snapshot includes output captured at export time. Relative destinations resolve against the session working directory.",
+			"Export before watch_remove or automatic max_events removal if the output must be preserved. Exported files are never removed by watch lifecycle operations.",
+		],
+		parameters: Type.Object({
+			name: Type.String({ description: "Watch name" }),
+			path: Type.String({ minLength: 1, description: "Destination file path, absolute or relative to the session working directory" }),
+			overwrite: Type.Optional(Type.Boolean({ description: "Replace an existing destination atomically when true; default false" })),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			guardConflicts();
+			try {
+				const result = await supervisor.exportOutput(params.name, owningSessionId(), resolve(ctx.cwd, params.path), params.overwrite ?? false);
+				return toolResult({
+					bytes_written: result.bytesWritten,
 					...(result.omittedLines > 0 ? { omitted_lines: result.omittedLines } : {}),
 				});
 			} catch (error) {
