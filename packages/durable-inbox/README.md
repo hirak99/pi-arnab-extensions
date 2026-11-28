@@ -15,7 +15,12 @@ Provides:
   through a caller-supplied native sender, never via terminal or user-input
   injection. Delivery format and sender identity are consumer hooks, so
   different packages keep different semantics over the same proven mechanics:
-  deduplicated, offline-queued and delivered on startup.
+  deduplicated, offline-queued and delivered on startup. For in-process reload
+  handoffs, `stop({ preserveDelivered: true })` retains successfully notified
+  IDs, `snapshotDelivered()` exports them, and `start(recipient, snapshot)`
+  suppresses duplicate backlog notifications. Queued-but-unsent IDs remain
+  eligible for the replacement runtime's scan. Ordinary stop/start and cold
+  startup retain the existing unread-backlog behavior.
 - `sendNativeNotification`: sends a visible custom Pi message with a
   package-specific renderer, always using `deliverAs="steer"` and
   `triggerTurn=true`. Pi steers an active run and starts a new run when idle.

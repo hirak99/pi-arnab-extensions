@@ -55,8 +55,9 @@ export class InboxDelivery<Sender extends SenderIdentity = SenderIdentity> {
 		this.onError = onError;
 	}
 
-	async start(recipient: string): Promise<void> {
+	async start(recipient: string, previouslyDelivered: Iterable<string> = []): Promise<void> {
 		await this.stop();
+		for (const messageId of previouslyDelivered) this.delivered.add(messageId);
 		const generation = ++this.generation;
 		this.recipient = recipient;
 		const directory = join(this.store.root, "inboxes", recipient);
@@ -69,13 +70,18 @@ export class InboxDelivery<Sender extends SenderIdentity = SenderIdentity> {
 		await this.scan(generation);
 	}
 
-	async stop(): Promise<void> {
+	async stop(options: { preserveDelivered?: boolean } = {}): Promise<void> {
 		++this.generation;
 		this.watcher?.close();
 		this.watcher = undefined;
 		this.recipient = undefined;
-		this.delivered.clear();
 		await this.queue;
+		if (!options.preserveDelivered) this.delivered.clear();
+	}
+
+	/** IDs whose native delivery completed before a preserved reload handoff. */
+	snapshotDelivered(): Set<string> {
+		return new Set(this.delivered);
 	}
 
 	async flush(): Promise<void> {
@@ -102,11 +108,20 @@ export class InboxDelivery<Sender extends SenderIdentity = SenderIdentity> {
 
 	private async deliver(messageId: string, generation: number): Promise<void> {
 		const recipient = this.recipient;
-		if (!recipient || generation !== this.generation) return;
+		if (!recipient || generation !== this.generation) {
+			this.delivered.delete(messageId);
+			return;
+		}
 		const [message] = await this.store.readInbox(recipient, { messageId });
-		if (!message || message.read_at !== null || generation !== this.generation) return;
+		if (!message || message.read_at !== null || generation !== this.generation) {
+			this.delivered.delete(messageId);
+			return;
+		}
 		const sender = await this.hooks.resolveSender(message);
-		if (generation !== this.generation) return;
+		if (generation !== this.generation) {
+			this.delivered.delete(messageId);
+			return;
+		}
 		const delivery = message.metadata.delivery ?? "inline";
 		const prompt = delivery === "inline"
 			? this.hooks.formatInline(sender, message)

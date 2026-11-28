@@ -17,6 +17,26 @@ import type { AgentRegistration, RegistrationInput, TeamMessage } from "./types.
 const REGISTRATION_ENTRY = "pi-agentic-team-registration";
 const TEAM_NOTIFICATION_TYPE = "team-message-notification";
 
+interface TeamReloadBridge {
+	agentId: string;
+	instanceId: string;
+	delivered: string[];
+	sessionId: string;
+	root: string;
+}
+
+const TEAM_RELOAD_BRIDGE_KEY = Symbol.for("pi-agentic-team.reload-bridge");
+
+function takeTeamReloadBridge(): TeamReloadBridge | null {
+	const bridge = (Reflect.get(globalThis, TEAM_RELOAD_BRIDGE_KEY) ?? null) as TeamReloadBridge | null;
+	Reflect.deleteProperty(globalThis, TEAM_RELOAD_BRIDGE_KEY);
+	return bridge;
+}
+
+function storeTeamReloadBridge(bridge: TeamReloadBridge): void {
+	Reflect.set(globalThis, TEAM_RELOAD_BRIDGE_KEY, bridge);
+}
+
 interface TeamNotificationDetails {
 	senderName: string;
 	messageId?: string;
@@ -58,7 +78,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 		return new Text(`${theme.fg("accent", "[team]")} ${theme.fg("accent", sender)}${id}`, 0, 0);
 	});
 
-	async function startInboxDelivery(ctx: ExtensionContext): Promise<void> {
+	async function startInboxDelivery(ctx: ExtensionContext, previouslyDelivered: Iterable<string> = []): Promise<void> {
 		const agentId = requireSelf();
 		await inboxDelivery?.stop();
 		inboxDelivery = new InboxDelivery(
@@ -78,7 +98,7 @@ export default function teamExtension(pi: ExtensionAPI) {
 				if (ctx.hasUI) ctx.ui.notify(`Team inbox delivery error: ${error.message}`, "error");
 			},
 		);
-		await inboxDelivery.start(agentId);
+		await inboxDelivery.start(agentId, previouslyDelivered);
 	}
 
 	function registrationInput(ctx: ExtensionContext, duties: string, name?: string, teams?: string[]): RegistrationInput {
@@ -168,6 +188,21 @@ export default function teamExtension(pi: ExtensionAPI) {
 		inboxDelivery = undefined;
 		selfAgentId = undefined;
 		selfInstanceId = undefined;
+		const bridge = takeTeamReloadBridge();
+		const nextSessionId = ctx.sessionManager.getSessionId();
+		if (_event?.reason === "reload" && bridge?.sessionId === nextSessionId && bridge.root === ctx.cwd) {
+			selfAgentId = bridge.agentId;
+			selfInstanceId = bridge.instanceId;
+			await startInboxDelivery(ctx, bridge.delivered);
+			return;
+		}
+		if (bridge) {
+			try {
+				await store.deactivate(bridge.agentId, bridge.instanceId);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		}
 		let restoredId: string | undefined;
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== REGISTRATION_ENTRY) continue;
@@ -189,7 +224,21 @@ export default function teamExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		if (event?.reason === "reload" && selfAgentId && selfInstanceId) {
+			await inboxDelivery?.stop({ preserveDelivered: true });
+			storeTeamReloadBridge({
+				agentId: selfAgentId,
+				instanceId: selfInstanceId,
+				delivered: [...(inboxDelivery?.snapshotDelivered() ?? [])],
+				sessionId: ctx.sessionManager.getSessionId(),
+				root: ctx.cwd,
+			});
+			inboxDelivery = undefined;
+			selfAgentId = undefined;
+			selfInstanceId = undefined;
+			return;
+		}
 		await inboxDelivery?.stop();
 		inboxDelivery = undefined;
 		if (selfAgentId && selfInstanceId) await store.deactivate(selfAgentId, selfInstanceId);
