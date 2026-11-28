@@ -13,7 +13,7 @@ const discord = vi.hoisted(() => {
     sendTyping: vi.fn(async () => {}),
     delete: vi.fn(async () => {}),
   };
-  return { channel, instances: [] as any[] };
+  return { channel, instances: [] as any[], sent: [] as string[] };
 });
 
 vi.mock("discord.js", async () => {
@@ -137,6 +137,7 @@ let sharedEventBus: ReturnType<typeof createEventBus>;
 
 beforeEach(() => {
   sharedEventBus = createEventBus();
+  discord.sent.length = 0;
 });
 
 afterEach(() => {
@@ -381,6 +382,121 @@ describe("Discord client reload handoff", () => {
       "<@user-1> ────────────────────",
     ]));
     expect(discord.channel.send).toHaveBeenCalledTimes(2);
+    await second.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("preserves reported activity and terminal dedupe across reload", async () => {
+    const backgroundTasks = [{ id: "job-a", name: "Running job", status: "running" }];
+    const runningWatches = [{ id: "watch-a", name: "Running watch", mode: "poll", status: "running" }];
+    sharedEventBus.on("pi-background-tasks:request:v1", (request: any) => {
+      sharedEventBus.emit("pi-background-tasks:response:v1", {
+        schema_version: "pi-background-tasks.extension-response.v1",
+        request_id: request.request_id,
+        operation: "status",
+        ok: true,
+        result: { tasks: backgroundTasks },
+      });
+    });
+    sharedEventBus.on("pi-watch:request:v1", (request: any) => {
+      sharedEventBus.emit("pi-watch:response:v1", {
+        schema_version: "pi-watch.extension-response.v1",
+        request_id: request.request_id,
+        operation: "status",
+        ok: true,
+        result: { watches: runningWatches },
+      });
+    });
+    const first = createHarness();
+    vi.mocked(loadEffectiveConfig).mockResolvedValueOnce({ token: "test-token", guildId: "guild-1", echo: true });
+    await first.start(makeAutoStartContext());
+    sharedEventBus.emit("subagents:ready", {});
+    sharedEventBus.emit("subagents:started", { id: "agent-a", description: "Persistent agent" });
+    await vi.waitFor(() => expect(first.pi.events).toBe(sharedEventBus));
+    await first.emit("agent_start");
+    await first.emit("agent_end");
+    await vi.waitFor(() => {
+      const texts = discord.channel.send.mock.calls.map(([text]) => text);
+      expect(texts.some((text) => text.includes("🤖 (New) Persistent agent") && text.includes("🧵 (New) Running job") && text.includes("👀 (New) Running watch")), JSON.stringify(texts)).toBe(true);
+    });
+    await first.emit("message_end", {
+      message: {
+        role: "custom",
+        customType: "background-task-notification",
+        display: true,
+        details: { id: "settled-job", name: "Settled job", status: "completed" },
+      },
+    });
+    await first.emit("session_shutdown", { reason: "reload" });
+
+    const reloadSpecifier = "../index.js?activity-state-adoption";
+    const freshExtension = (await import(reloadSpecifier)).default;
+    const second = createHarness(freshExtension);
+    await second.emit("session_start", { reason: "reload" }, makeAutoStartContext());
+    await second.emit("agent_start");
+    await second.emit("agent_end");
+    await vi.waitFor(() => {
+      const snapshots = discord.channel.send.mock.calls.map(([text]) => text).filter((text) => text.startsWith("Running -"));
+      expect(snapshots.length).toBe(2);
+      expect(snapshots[1]).toContain("🤖 Persistent agent");
+      expect(snapshots[1]).toContain("🧵 Running job");
+      expect(snapshots[1]).toContain("👀 Running watch");
+      expect(snapshots[1]).not.toContain("(New)");
+    });
+    sharedEventBus.emit("subagents:completed", { id: "agent-a" });
+    await vi.waitFor(() => expect(discord.channel.send).toHaveBeenCalledWith("✅ Finished: Persistent agent"));
+    sharedEventBus.emit("pi-background-tasks:terminal:v1", {
+      schema_version: "pi-background-tasks.extension-terminal.v1",
+      task: { id: "settled-job", name: "Settled job", status: "completed" },
+    });
+    sharedEventBus.emit("pi-background-tasks:terminal:v1", {
+      schema_version: "pi-background-tasks.extension-terminal.v1",
+      task: { id: "dedupe-sentinel", name: "Dedupe sentinel", status: "completed" },
+    });
+    await vi.waitFor(() => expect(discord.channel.send).toHaveBeenCalledWith("✅ Finished: Dedupe sentinel"));
+    expect(discord.channel.send.mock.calls.filter(([text]) => text === "✅ Finished: Settled job")).toHaveLength(1);
+    await second.emit("session_shutdown", { reason: "quit" });
+  });
+
+  it("keeps activity reports ordered through a blocked reload handoff", async () => {
+    const pendingSends: Array<() => void> = [];
+    discord.channel.send.mockImplementation((text: string) => new Promise<{ id: string }>((resolve) => {
+      pendingSends.push(() => {
+        discord.sent.push(text);
+        resolve({ id: `message-${discord.sent.length}` });
+      });
+    }));
+    discord.sent.length = 0;
+    const first = createHarness();
+    await first.start(makeAutoStartContext());
+    sharedEventBus.emit("subagents:ready", {});
+    sharedEventBus.emit("subagents:started", { id: "agent-a", description: "A" });
+    sharedEventBus.emit("subagents:completed", { id: "agent-a" });
+    await vi.waitFor(() => expect(pendingSends).toHaveLength(1));
+    const secondReport = first.emit("message_end", {
+      message: {
+        role: "custom",
+        customType: "background-task-notification",
+        display: true,
+        details: { id: "job-b", name: "B", status: "completed" },
+      },
+    });
+    await first.emit("session_shutdown", { reason: "reload" });
+    sharedEventBus.emit("pi-background-tasks:terminal:v1", {
+      schema_version: "pi-background-tasks.extension-terminal.v1",
+      task: { id: "job-c", name: "C", status: "completed" },
+    });
+
+    const reloadSpecifier = "../index.js?ordered-activity-adoption";
+    const freshExtension = (await import(reloadSpecifier)).default;
+    const second = createHarness(freshExtension);
+    await second.emit("session_start", { reason: "reload" }, makeAutoStartContext());
+    for (const expected of ["A", "B", "C"]) {
+      await vi.waitFor(() => expect(pendingSends).toHaveLength(1));
+      pendingSends.shift()!();
+      await vi.waitFor(() => expect(discord.sent.some((text) => text.endsWith(expected))).toBe(true));
+    }
+    await secondReport;
+    expect(discord.sent).toEqual(["✅ Finished: A", "✅ Finished: B", "✅ Finished: C"]);
     await second.emit("session_shutdown", { reason: "quit" });
   });
 

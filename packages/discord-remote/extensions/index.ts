@@ -65,6 +65,49 @@ const RECONNECT_MAX_ATTEMPTS = 10;
  * in-flight login is not destroyed prematurely. */
 const RELOAD_LIVENESS_GRACE_MS = 5_000;
 
+interface RunningSubagent {
+  type?: string;
+  description?: string;
+  reported: boolean;
+}
+
+interface BackgroundTask {
+  id: string;
+  name?: string;
+  description?: string;
+  status?: string;
+}
+
+interface RunningBackgroundTask {
+  id: string;
+  name?: string;
+  description?: string;
+  source: "tasks" | "jobs";
+  reported: boolean;
+}
+
+interface WatchSnapshot {
+  id: string;
+  name: string;
+  mode: "poll" | "stream";
+  status: "running" | "paused" | "stopped";
+  every_seconds?: number | null;
+  broken?: boolean;
+  restart_attempt?: number;
+}
+
+interface DisplayWatch extends WatchSnapshot {
+  reported: boolean;
+}
+
+interface ActivityBridgeState {
+  subagentsAvailable: boolean;
+  runningSubagents: Map<string, RunningSubagent>;
+  runningBackgroundTasks: Map<string, RunningBackgroundTask>;
+  settledBackgroundTaskIds: Set<string>;
+  watches: Map<string, DisplayWatch>;
+}
+
 interface ActivityBusHandoff {
   activity: ReloadDispatcher<{ channel: string; event: any }>;
   responses: Map<string, ReloadDispatcher<any>>;
@@ -88,6 +131,8 @@ interface ReloadBridge {
   root: string;
   gateway?: GatewayHandoff;
   activityBus?: ActivityBusHandoff;
+  activityReports?: ReloadDispatcher<string>;
+  activityState?: ActivityBridgeState;
   pendingReplyChannelId?: string | null;
   pendingReplyUserId?: string | null;
   injectedQueue?: string[];
@@ -186,11 +231,6 @@ export default function (pi: ExtensionAPI) {
   // All integrations use only the shared pi.events bus. Missing plugins
   // therefore leave these features inert without imports or startup errors.
   let subagentsAvailable = false;
-  interface RunningSubagent {
-    type?: string;
-    description?: string;
-    reported: boolean;
-  }
   const runningSubagents = new Map<string, RunningSubagent>();
 
   const BG_REQUEST_CHANNEL = "pi-background-tasks:request:v1";
@@ -206,19 +246,6 @@ export default function (pi: ExtensionAPI) {
   const JOB_FINISHED_CUSTOM_TYPE = "background-job-finished";
   const BG_FINISHED_CUSTOM_TYPE = "background-task-notification";
 
-  interface BackgroundTask {
-    id: string;
-    name?: string;
-    description?: string;
-    status?: string;
-  }
-  interface RunningBackgroundTask {
-    id: string;
-    name?: string;
-    description?: string;
-    source: "tasks" | "jobs";
-    reported: boolean;
-  }
   const runningBackgroundTasks = new Map<string, RunningBackgroundTask>();
   const settledBackgroundTaskIds = new Set<string>();
   const pendingBackgroundStatusRequests = new Map<
@@ -235,24 +262,13 @@ export default function (pi: ExtensionAPI) {
   const WATCH_REQUEST_SCHEMA = "pi-watch.extension-request.v1";
   const WATCH_RESPONSE_SCHEMA = "pi-watch.extension-response.v1";
 
-  interface WatchSnapshot {
-    id: string;
-    name: string;
-    mode: "poll" | "stream";
-    status: "running" | "paused" | "stopped";
-    every_seconds?: number | null;
-    broken?: boolean;
-    restart_attempt?: number;
-  }
-  interface DisplayWatch extends WatchSnapshot {
-    reported: boolean;
-  }
   const watches = new Map<string, DisplayWatch>();
   const pendingWatchStatusRequests = new Map<
     string,
     (watches: WatchSnapshot[] | undefined) => void
   >();
-  let activityReportQueue: Promise<void> = Promise.resolve();
+  const bridgedActivityReports = peekReloadBridge()?.activityReports;
+  let activityReports = bridgedActivityReports ?? new ReloadDispatcher<string>();
 
   function activityLabel(value: string | undefined, fallback: string): string {
     const label = value?.trim() || fallback;
@@ -407,6 +423,7 @@ export default function (pi: ExtensionAPI) {
     subscribeActivityBus();
     bindActivityBus();
   }
+  if (!bridgedActivityReports) activityReports.bind(sendActivityStatus);
 
   async function discardReloadBridge(preserved: ReloadBridge): Promise<void> {
     if (preserved.activityBus) {
@@ -422,13 +439,18 @@ export default function (pi: ExtensionAPI) {
       }
     }
     disposeGateway(preserved.gateway);
+    if (preserved.activityReports) {
+      preserved.activityReports.dispose();
+      if (activityReports === preserved.activityReports) {
+        activityReports = new ReloadDispatcher<string>();
+        activityReports.bind(sendActivityStatus);
+      }
+    }
     await preserved.client.destroy().catch(() => {});
   }
 
   function queueActivityReport(text: string): Promise<void> {
-    const report = activityReportQueue.then(() => sendActivityStatus(text));
-    activityReportQueue = report;
-    return report;
+    return activityReports.publish(text);
   }
 
   function onSubagentSettled(event: any, succeeded: boolean): Promise<void> | undefined {
@@ -1139,9 +1161,22 @@ export default function (pi: ExtensionAPI) {
         pendingReplyChannelId = preserved.pendingReplyChannelId ?? null;
         pendingReplyUserId = preserved.pendingReplyUserId ?? null;
         injectedQueue.splice(0, injectedQueue.length, ...(preserved.injectedQueue ?? []));
+        if (preserved.activityState) {
+          subagentsAvailable = preserved.activityState.subagentsAvailable;
+          runningSubagents.clear();
+          for (const [id, value] of preserved.activityState.runningSubagents) runningSubagents.set(id, value);
+          runningBackgroundTasks.clear();
+          for (const [id, value] of preserved.activityState.runningBackgroundTasks) runningBackgroundTasks.set(id, value);
+          settledBackgroundTaskIds.clear();
+          for (const id of preserved.activityState.settledBackgroundTaskIds) settledBackgroundTaskIds.add(id);
+          watches.clear();
+          for (const [id, value] of preserved.activityState.watches) watches.set(id, value);
+        }
         isShuttingDown = false;
+        activityReports.bind(sendActivityStatus);
         bindActivityBus();
         attachClientHandlers(client);
+        await Promise.all([refreshRunningBackgroundTasks(), refreshWatches()]);
         const channelLabel = runtime.sessionChannelName ?? runtime.activeChannelId ?? "unknown";
         connectSetStatus("pi-discord-remote", colorStatus(`💬 Discord: #${channelLabel}`, "success"));
         // The bridged socket may have died during the reload window (or a
@@ -1398,10 +1433,12 @@ export default function (pi: ExtensionAPI) {
     // runtime-owned consumers are detached. Full shutdown disposes only our
     // own subscriptions, never unrelated EventBus or Discord listeners.
     if (event?.reason === "reload") {
+      activityReports.detach();
       detachActivityBus(activityBus);
       detachGatewayConsumers();
     } else {
       disposeActivityBus(activityBus);
+      activityReports.dispose();
     }
     for (const settle of [...pendingBackgroundStatusRequests.values()]) settle(undefined);
     for (const settle of [...pendingJobStatusRequests.values()]) settle(undefined);
@@ -1419,6 +1456,7 @@ export default function (pi: ExtensionAPI) {
           await client.destroy().catch(() => {});
           disposeGateway(gateway);
           disposeActivityBus(activityBus);
+          activityReports.dispose();
         } else {
           storeReloadBridge({
             client,
@@ -1429,6 +1467,14 @@ export default function (pi: ExtensionAPI) {
             root: activeRoot ?? process.cwd(),
             gateway,
             activityBus,
+            activityReports,
+            activityState: {
+              subagentsAvailable,
+              runningSubagents,
+              runningBackgroundTasks,
+              settledBackgroundTaskIds,
+              watches,
+            },
             pendingReplyChannelId,
             pendingReplyUserId,
             injectedQueue: [...injectedQueue],
@@ -1443,6 +1489,7 @@ export default function (pi: ExtensionAPI) {
         disposeGateway(gateway);
         gateway = undefined;
         disposeActivityBus(activityBus);
+        activityReports.dispose();
       }
       connectNotify = null;
       connectSetStatus = null;
@@ -1461,6 +1508,7 @@ export default function (pi: ExtensionAPI) {
     }
     disposeGateway(gateway);
     gateway = undefined;
+    activityReports.dispose();
     activeSessionId = null;
     activeRoot = null;
   });

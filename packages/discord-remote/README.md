@@ -43,6 +43,10 @@ creates a new client. Stable gateway and EventBus listeners buffer events while
 their old consumers are detached, then fresh consumers drain them in order.
 Accepted Discord prompts also retain their reply channel, author mention, and
 echo-suppression queue across reload, including the pre-`agent_start` window.
+Running subagent/job/watch snapshots, `(New)` markers, terminal dedupe IDs, and
+queued activity text are also retained. Report sends use a rebound FIFO rather
+than carrying stale Promise chains, and job/watch status is refreshed on
+adoption without posting an unsolicited snapshot.
 
 Fork-only config keys used below: `displayNames`, `echo`, `steer`,
 `autoStart`, `staticChannel`, `channelName`. For day-to-day operations — reconnecting after a reboot,
